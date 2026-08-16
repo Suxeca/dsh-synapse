@@ -1,0 +1,686 @@
+const app = document.querySelector('#app')
+const savedBranchAnchors = (() => {
+  try {
+    const value = JSON.parse(localStorage.getItem('dsh-synapse:branch-anchors') ?? '[]')
+    return Array.isArray(value) ? value.filter(item => Array.isArray(item) && typeof item[0] === 'string' && typeof item[1] === 'string') : []
+  } catch { return [] }
+})()
+const savedCardPositions = (() => {
+  try {
+    const value = JSON.parse(localStorage.getItem('dsh-synapse:card-positions') ?? '[]')
+    return Array.isArray(value) ? value.filter(item => Array.isArray(item) && typeof item[0] === 'string' && Number.isFinite(item[1]?.x) && Number.isFinite(item[1]?.y)) : []
+  } catch { return [] }
+})()
+const state = {
+  summaries: [], workspace: null, activeId: null, mode: 'canvas', zoom: 1, currentDsh: null, sidebarCollapsed: false,
+  dshWorkspaces: [], selectedDshWorkspaceId: null,
+  historyBySession: new Map(), historyRequests: new Map(), pendingReplies: new Map(), pendingRpc: new Map(), liveReplies: new Map(),
+  draft: null, error: '', workspaceLoad: 0, branchAnchors: new Map(savedBranchAnchors), cardPositions: new Map(savedCardPositions),
+  expandedMessageIds: new Set(),
+}
+
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]))
+const formatTime = value => new Date(value).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+const currentThread = () => state.workspace?.threads.find(thread => thread.id === state.activeId) ?? state.workspace?.threads[0] ?? null
+
+function rememberBranchAnchor(sessionId, cardId) {
+  state.branchAnchors.set(sessionId, cardId)
+  try { localStorage.setItem('dsh-synapse:branch-anchors', JSON.stringify([...state.branchAnchors])) } catch { /* Private browsing may disable local storage. */ }
+}
+
+function rememberCardPosition(cardId, position) {
+  state.cardPositions.set(cardId, { x: Math.round(position.x), y: Math.round(position.y) })
+  try { localStorage.setItem('dsh-synapse:card-positions', JSON.stringify([...state.cardPositions])) } catch { /* Private browsing may disable local storage. */ }
+}
+
+function resetCardPositions() {
+  state.cardPositions.clear()
+  try { localStorage.removeItem('dsh-synapse:card-positions') } catch { /* Private browsing may disable local storage. */ }
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, { ...options, headers: { 'content-type': 'application/json', ...(options.headers ?? {}) } })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(body.error ?? '请求失败')
+  return body
+}
+
+function post(type, payload = {}) {
+  if (window.parent !== window) window.parent.postMessage({ source: 'dsh-synapse', type, ...payload }, window.location.origin)
+}
+
+function dshRpc(type, payload = {}) {
+  if (window.parent === window) return Promise.reject(new Error('请从 DSH 页面打开 Synapse 后再操作会话'))
+  const requestId = crypto.randomUUID()
+  post(type, { requestId, ...payload })
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      state.pendingRpc.delete(requestId)
+      reject(new Error('DSH 未在规定时间内响应'))
+    }, 20_000)
+    state.pendingRpc.set(requestId, { resolve, reject, timer })
+  })
+}
+
+function settleRpc(requestId, value, error) {
+  const pending = state.pendingRpc.get(requestId)
+  if (pending === undefined) return
+  state.pendingRpc.delete(requestId)
+  window.clearTimeout(pending.timer)
+  if (error === undefined) pending.resolve(value)
+  else pending.reject(error instanceof Error ? error : new Error(String(error)))
+}
+
+function setError(error = '') { state.error = error instanceof Error ? error.message : error; render() }
+
+function messagesFromEvents(events) {
+  if (!Array.isArray(events)) return []
+  return events.flatMap(event => {
+    const content = event?.data?.message?.content ?? event?.data?.content
+    const text = Array.isArray(content) ? content.filter(block => block?.type === 'text').map(block => block.text).filter(Boolean).join('\n') : ''
+    if (event?.type === 'user/message' && text && !text.startsWith('Current runtime context. This snapshot supersedes earlier runtime-context snapshots.')) return [{ kind: 'user', text, at: event.time, sourceSeq: event.seq }]
+    if (event?.type === 'assistant/message' && text) return [{ kind: 'assistant', text, at: event.time, sourceSeq: event.seq }]
+    return []
+  })
+}
+
+async function loadThreadHistory() {}
+
+function canReplaceView() {
+  return state.draft === null && !document.activeElement?.matches('textarea')
+}
+
+function currentDshWorkspace() {
+  const id = state.currentDsh?.id
+  return typeof id === 'string' ? state.dshWorkspaces.find(workspace => workspace.sessionIds.includes(id)) : undefined
+}
+
+function selectedDshWorkspace() {
+  return state.dshWorkspaces.find(workspace => workspace.id === state.selectedDshWorkspaceId)
+}
+
+function workspaceChoices() {
+  if (state.dshWorkspaces.length > 0) return state.dshWorkspaces.map(workspace => ({ ...workspace, source: 'dsh' }))
+  return state.summaries.map(workspace => ({ id: workspace.id, title: workspace.title, path: workspace.cwd, sessionIds: [], source: 'projection' }))
+}
+
+async function threadsForDshWorkspace(workspace) {
+  if (workspace.sessionIds.length === 0) return []
+  const requested = new Set(workspace.sessionIds)
+  const projections = await Promise.all(state.summaries.map(summary => api(`/synapse/api/workspaces/${summary.id}`)))
+  return projections.flatMap(projection => projection.workspace.threads.filter(thread => requested.has(thread.dshSessionId)))
+}
+
+async function openDshWorkspace(id, { renderAfter = true } = {}) {
+  const workspace = state.dshWorkspaces.find(item => item.id === id)
+  if (workspace === undefined) return false
+  const load = ++state.workspaceLoad
+  state.selectedDshWorkspaceId = id
+  const threads = await threadsForDshWorkspace(workspace)
+  if (load !== state.workspaceLoad) return true
+  state.workspace = { id: `dsh:${workspace.id}`, title: workspace.title, cwd: workspace.path, threads }
+  state.activeId = state.workspace.threads.some(thread => thread.id === state.activeId) ? state.activeId : state.workspace.threads[0]?.id ?? null
+  if (renderAfter && canReplaceView()) render()
+  await Promise.all(state.workspace.threads.map(thread => loadThreadHistory(thread, false)))
+  if (renderAfter && load === state.workspaceLoad && canReplaceView()) render()
+  return true
+}
+
+async function openCurrentWorkspace() {
+  const workspace = currentDshWorkspace()
+  if (workspace === undefined || workspace.id === state.selectedDshWorkspaceId) return false
+  return openDshWorkspace(workspace.id)
+}
+
+async function refreshSummaries({ renderAfter = true } = {}) {
+  const before = JSON.stringify(state.summaries)
+  const body = await api('/synapse/api/workspaces')
+  state.summaries = body.workspaces
+  const changed = before !== JSON.stringify(state.summaries)
+  const current = state.workspace?.id
+  if (state.selectedDshWorkspaceId === null && current !== null && !state.summaries.some(item => item.id === current)) state.workspace = null
+  const selected = selectedDshWorkspace()
+  if (selected !== undefined && (changed || state.workspace === null)) await openDshWorkspace(selected.id, { renderAfter })
+  else if (state.workspace === null && state.summaries.length > 0) await openWorkspace(state.summaries[0].id)
+  else if (renderAfter && changed && canReplaceView()) render()
+  return changed
+}
+
+async function openWorkspace(id, { renderAfter = true } = {}) {
+  const load = ++state.workspaceLoad
+  const body = await api(`/synapse/api/workspaces/${id}`)
+  if (load !== state.workspaceLoad) return
+  state.workspace = body.workspace
+  state.activeId = state.workspace.threads.some(thread => thread.id === state.activeId) ? state.activeId : state.workspace.threads[0]?.id ?? null
+  if (renderAfter && canReplaceView()) render()
+  await Promise.all(state.workspace.threads.map(thread => loadThreadHistory(thread, false)))
+  if (renderAfter && load === state.workspaceLoad && canReplaceView()) render()
+}
+
+async function refreshProjection() {
+  const summariesChanged = await refreshSummaries({ renderAfter: false })
+  if (!summariesChanged || state.workspace === null || !canReplaceView()) return summariesChanged
+  if (state.selectedDshWorkspaceId !== null) await openDshWorkspace(state.selectedDshWorkspaceId)
+  else await openWorkspace(state.workspace.id)
+  return true
+}
+
+function openNewSession() {
+  if (state.draft !== null) return
+  state.mode = 'canvas'
+  state.draft = { kind: 'new', text: '', sending: false }
+  state.error = ''
+  render()
+  window.setTimeout(() => document.querySelector('[data-draft] textarea')?.focus(), 0)
+}
+
+async function archiveThread(thread) {
+  if (!window.confirm(`归档画布中的「${thread.title}」及其分支？DSH 原会话会保留，可在 DSH 内继续查看。`)) return
+  await api(`/synapse/api/threads/${thread.id}`, { method: 'DELETE' })
+  state.historyBySession.delete(thread.dshSessionId)
+  state.activeId = null
+  await refreshSummaries()
+}
+
+function openContinue(parent, anchorId = undefined) {
+  if (parent.dshSessionId === null) return setError('该节点没有关联的 DSH 会话')
+  state.activeId = parent.id
+  state.draft = { kind: 'continue', parentId: parent.id, anchorId, text: '', sending: false }
+  render()
+  window.setTimeout(() => document.querySelector('[data-draft] textarea')?.focus(), 0)
+}
+
+function openBranch(parent, atSeq = undefined, anchorId = undefined) {
+  if (parent.dshSessionId === null) return setError('该节点没有关联的 DSH 会话')
+  state.activeId = parent.id
+  state.draft = { kind: 'branch', parentId: parent.id, atSeq, anchorId, text: '', sending: false }
+  render()
+  window.setTimeout(() => document.querySelector('[data-draft] textarea')?.focus(), 0)
+}
+
+async function sendMessage(thread, text) {
+  if (thread.dshSessionId === null) throw new Error('该节点没有关联的 DSH 会话')
+  if (state.pendingReplies.has(thread.dshSessionId)) throw new Error('该会话正在回复，请稍后再发送')
+  state.pendingReplies.set(thread.dshSessionId, { text, at: Date.now() })
+  state.error = ''
+  render()
+  try {
+    await dshRpc('synapse:send-message', { sessionId: thread.dshSessionId, text })
+    void loadThreadHistory(thread)
+  } catch (error) {
+    state.pendingReplies.delete(thread.dshSessionId)
+    render()
+    throw error
+  }
+}
+
+async function submitDraft() {
+  const draft = state.draft
+  const text = draft?.text.trim()
+  if (draft === null || !text) return
+  draft.sending = true
+  state.error = ''
+  render()
+  try {
+    if (draft.kind === 'new') {
+      const session = await dshRpc('synapse:create-session', { workspaceId: state.selectedDshWorkspaceId, cwd: state.currentDsh?.cwd })
+      await dshRpc('synapse:send-message', { sessionId: session.id, text })
+      state.draft = null
+      render()
+      window.setTimeout(() => { void refreshProjection().catch(() => {}) }, 150)
+      return
+    }
+    const parent = state.workspace?.threads.find(thread => thread.id === draft.parentId)
+    if (parent === undefined) throw new Error('来源会话不存在')
+    if (draft.kind === 'continue') {
+      state.draft = null
+      await sendMessage(parent, text)
+      return
+    }
+    const session = await dshRpc('synapse:fork-session', { sessionId: parent.dshSessionId, atSeq: draft.atSeq })
+    if (draft.anchorId !== undefined) rememberBranchAnchor(session.id, draft.anchorId)
+    const result = await api(`/synapse/api/threads/${parent.id}/branch`, { method: 'POST', body: JSON.stringify({ title: text.slice(0, 42), dshSessionId: session.id, dshSessionTitle: session.title }) })
+    state.activeId = result.thread.id
+    state.draft = null
+    render()
+    const child = { ...result.thread, messages: [] }
+    await sendMessage(child, text)
+    await refreshProjection()
+    if (state.workspace !== null) await openWorkspace(state.workspace.id)
+  } catch (error) { state.draft = { ...draft, sending: false }; setError(error) }
+}
+
+function threadsById() { return new Map((state.workspace?.threads ?? []).map(thread => [thread.id, thread])) }
+function persistedMessagesFor(thread) { return state.historyBySession.get(thread.dshSessionId) ?? thread.messages ?? [] }
+
+function pendingUserIndex(messages, pending) {
+  return messages.findLastIndex(message => message.kind === 'user' && message.text === pending.text && new Date(message.at).getTime() >= pending.at - 2_000)
+}
+
+function settlePendingReply(thread, messages) {
+  const pending = state.pendingReplies.get(thread.dshSessionId)
+  if (pending === undefined) return false
+  const userIndex = pendingUserIndex(messages, pending)
+  if (userIndex === -1 || !messages.slice(userIndex + 1).some(message => message.kind === 'assistant')) return false
+  state.pendingReplies.delete(thread.dshSessionId)
+  return true
+}
+
+function messagesFor(thread) {
+  // A runtime-context snapshot is internal DSH state, never a user turn.
+  // Filter here as well as during persistence so existing saved workspaces
+  // immediately render one question and its answer as one card.
+  const messages = persistedMessagesFor(thread).filter(message => !(message.kind === 'user' && typeof message.text === 'string' && message.text.trimStart().startsWith('Current runtime context. This snapshot supersedes earlier runtime-context snapshots.')))
+  const pending = state.pendingReplies.get(thread.dshSessionId)
+  if (pending === undefined) return messages
+  if (settlePendingReply(thread, messages)) {
+    state.liveReplies.delete(thread.dshSessionId)
+    return messages
+  }
+  const liveReply = state.liveReplies.get(thread.dshSessionId)
+  const liveAssistant = liveReply?.running ? { kind: 'assistant', text: liveReply.text, pending: true, at: new Date().toISOString() } : { kind: 'assistant', text: '', pending: true, at: new Date().toISOString() }
+  const userIndex = pendingUserIndex(messages, pending)
+  if (userIndex !== -1) return [...messages, liveAssistant]
+  return [...messages, { kind: 'user', text: pending.text, pending: true, at: new Date(pending.at).toISOString() }, liveAssistant]
+}
+
+function latestMessage(thread, kind) { return [...messagesFor(thread)].reverse().find(message => message.kind === kind) }
+function questionFor(thread) { return latestMessage(thread, 'user')?.text ?? thread.dshSessionTitle ?? '等待用户提问' }
+function answerFor(thread) { return latestMessage(thread, 'assistant') ?? null }
+
+function inlineMarkdown(text) {
+  return escapeHtml(text)
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/~~([^~]+)~~/g, '<s>$1</s>')
+    .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
+}
+
+function markdownBlock(text) {
+  const lines = text.split('\n')
+  const output = []
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index]
+    if (line.trim() === '') { index++; continue }
+    const heading = /^(#{1,3})\s+(.+)$/.exec(line)
+    if (heading !== null) {
+      const level = heading[1].length
+      output.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`)
+      index++
+      continue
+    }
+    const unordered = /^[-*+]\s+(.+)$/.exec(line)
+    const ordered = /^\d+[.)]\s+(.+)$/.exec(line)
+    if (unordered !== null || ordered !== null) {
+      const matcher = unordered === null ? /^\d+[.)]\s+(.+)$/ : /^[-*+]\s+(.+)$/
+      const items = []
+      while (index < lines.length) {
+        const item = matcher.exec(lines[index])
+        if (item === null) break
+        items.push(`<li>${inlineMarkdown(item[1])}</li>`)
+        index++
+      }
+      output.push(`<${unordered === null ? 'ol' : 'ul'}>${items.join('')}</${unordered === null ? 'ol' : 'ul'}>`)
+      continue
+    }
+    const paragraph = []
+    while (index < lines.length && lines[index].trim() !== '' && !/^(#{1,3})\s+/.test(lines[index]) && !/^[-*+]\s+/.test(lines[index]) && !/^\d+[.)]\s+/.test(lines[index])) paragraph.push(lines[index++])
+    // A marker-only line such as PowerShell's "+ " diagnostic is neither a
+    // list item nor paragraph content under the rules above. Consume it so
+    // the parser always makes progress.
+    if (paragraph.length === 0) paragraph.push(lines[index++])
+    output.push(`<p>${paragraph.map(inlineMarkdown).join('<br>')}</p>`)
+  }
+  return output.join('')
+}
+
+function renderMarkdown(text) {
+  const parts = String(text).split(/```/)
+  return parts.map((part, index) => index % 2 === 1
+    ? `<pre><code>${escapeHtml(part.replace(/^\w*\n/, ''))}</code></pre>`
+    : markdownBlock(part)).join('')
+}
+
+function conversationCards(threads) {
+  const cards = []
+  const cardsByThread = new Map()
+  for (const thread of threads) {
+    const messages = messagesFor(thread)
+    const turns = []
+    for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
+      const question = messages[messageIndex]
+      if (question.kind !== 'user') continue
+      const replies = []
+      for (let replyIndex = messageIndex + 1; replyIndex < messages.length; replyIndex++) {
+        const reply = messages[replyIndex]
+        if (reply.kind === 'user') break
+        if (reply.kind === 'assistant') replies.push(reply)
+      }
+      const answer = replies.at(-1) ?? null
+      const turnIndex = turns.length
+      const id = `${thread.id}:turn:${question.sourceSeq ?? messageIndex}`
+      const position = state.cardPositions?.get(id) ?? { x: thread.position.x + turnIndex * 365, y: thread.position.y }
+      turns.push({
+        id,
+        dshThreadId: thread.id,
+        sourceParentId: thread.parentId,
+        parentId: null,
+        sourceSeq: question.sourceSeq,
+        turnIndex,
+        position,
+        question: question.text,
+        answer,
+      })
+    }
+    const liveReply = state.liveReplies.get(thread.dshSessionId)
+    const latestTurn = turns.at(-1)
+    if (liveReply?.running && latestTurn !== undefined && (latestTurn.answer === null || latestTurn.answer.pending === true)) latestTurn.answer = { kind: 'assistant', text: liveReply.text, pending: true, at: new Date().toISOString() }
+    if (turns.length === 0) {
+      const id = `${thread.id}:turn:empty`
+      turns.push({
+      id,
+      dshThreadId: thread.id,
+      sourceParentId: thread.parentId,
+      parentId: null,
+      sourceSeq: undefined,
+      turnIndex: 0,
+      position: state.cardPositions?.get(id) ?? { ...thread.position },
+      question: thread.dshSessionTitle ?? thread.title,
+      answer: null,
+      })
+    }
+    cardsByThread.set(thread.id, turns)
+    cards.push(...turns)
+  }
+  for (const card of cards) {
+    const siblings = cardsByThread.get(card.dshThreadId)
+    if (card.turnIndex > 0) card.parentId = siblings[card.turnIndex - 1].id
+    else {
+      const parentCards = cardsByThread.get(card.sourceParentId)
+      const sourceThread = threads.find(thread => thread.id === card.dshThreadId)
+      const firstChildQuestion = siblings?.[0]
+      const seedLength = sourceThread?.sourceSeedLength ?? firstChildQuestion?.sourceSeq
+      // A fork inherits every parent event before DSH's durable seed boundary.
+      // The latest parent question below that boundary is the exact Turn where
+      // this child was born. Canvas coordinates never participate in lineage.
+      const inheritedTurn = Number.isSafeInteger(seedLength)
+        ? parentCards?.filter(candidate => Number.isInteger(candidate.sourceSeq) && candidate.sourceSeq < seedLength).at(-1)
+        : undefined
+      card.parentId = state.branchAnchors.get(card.dshThreadId) ?? inheritedTurn?.id ?? null
+    }
+  }
+  return cards
+}
+
+function canvasConnectors(cards) {
+  const index = new Map(cards.map(card => [card.id, card]))
+  const links = cards.map(card => {
+    const parent = card.parentId === null ? null : index.get(card.parentId)
+    if (parent === undefined || parent === null) return ''
+    const fromX = parent.position.x + 310; const fromY = parent.position.y + 138
+    const toX = card.position.x; const toY = card.position.y + 138; const bend = Math.min(110, Math.max(36, Math.abs(toX - fromX) * .2))
+    return `<path d="M ${fromX} ${fromY} C ${fromX + bend} ${fromY}, ${toX - bend} ${toY}, ${toX} ${toY}"></path>`
+  })
+  const draft = state.draft
+  const parent = draft === null ? undefined : cards.find(card => card.id === draft.anchorId) ?? cards.filter(card => card.dshThreadId === draft.parentId).at(-1)
+  if (parent !== undefined) links.push(`<path class="draft-connector" d="M ${parent.position.x + 310} ${parent.position.y + 138} C ${parent.position.x + 365} ${parent.position.y + 138}, ${parent.position.x + 310} ${parent.position.y + 138}, ${parent.position.x + 365} ${parent.position.y + 138}"></path>`)
+  return links.join('')
+}
+
+function conversationCard(card) {
+  const active = card.dshThreadId === state.activeId ? 'active' : ''
+  const source = card.parentId === null ? 'DSH 会话' : card.turnIndex === 0 ? 'DSH 分支' : '追问'
+  const branchSequence = Number.isInteger(card.answer?.sourceSeq) ? ` data-seq="${card.answer.sourceSeq}"` : ''
+  return `<article class="thread-card ${active}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px;--thread-color:#3478f6">
+    <button class="node-handle" data-drag-card="${card.id}" aria-label="拖动 ${escapeHtml(card.question)}" title="拖动卡片"></button>
+    <div class="thread-card-head"><span class="topic-dot"></span><button class="thread-title" data-action="show-thread" data-thread="${card.dshThreadId}" title="查看完整会话：${escapeHtml(card.question)}">${escapeHtml(card.question)}</button><button class="branch-button" data-action="open-continue" data-thread="${card.dshThreadId}" data-card="${card.id}" title="添加追问" aria-label="为 ${escapeHtml(card.question)} 添加追问"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></svg></button></div>
+    <div class="thread-meta"><span>${source}</span><span>第 ${card.turnIndex + 1} 轮</span></div>
+    <div class="thread-answer">${card.answer === null ? '<p class="thread-answer-empty">等待助手回复</p>' : card.answer.pending && card.answer.text === '' ? '<p class="thread-answer-pending">正在回复</p>' : `${renderMarkdown(card.answer.text)}${card.answer.pending ? '<p class="thread-answer-pending">正在回复</p>' : ''}`}</div>
+    <footer><button data-action="show-thread" data-thread="${card.dshThreadId}">详情</button><button data-action="open-branch" data-thread="${card.dshThreadId}" data-card="${card.id}"${branchSequence}>分支</button><button data-action="open-dsh" data-thread="${card.dshThreadId}">打开 DSH</button><button data-action="archive-thread" data-thread="${card.dshThreadId}">归档</button></footer>
+  </article>`
+}
+
+function draftActions(draft) {
+  const disabled = draft.sending ? 'disabled' : ''
+  return `<div class="draft-actions"><button type="button" data-action="cancel-draft" ${disabled} aria-label="取消" title="取消"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 4.5 7 7m0-7-7 7"/></svg></button><button class="primary" type="submit" ${disabled} aria-label="发送" title="发送"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 12.5v-9M4.5 7 8 3.5 11.5 7"/></svg></button></div>`
+}
+
+function draftCard(cards) {
+  const draft = state.draft
+  if (draft?.kind === 'new') return `<article class="thread-card draft-card first-session-card" style="left:86px;top:82px;--thread-color:#3478f6">
+    <div class="thread-card-head"><span class="topic-dot"></span><strong>新会话</strong></div>
+    <form class="draft-branch-form" data-draft><textarea maxlength="4000" placeholder="输入第一条消息" ${draft.sending ? 'disabled' : ''}>${escapeHtml(draft.text)}</textarea>${draftActions(draft)}</form>
+  </article>`
+  const parent = draft === null ? undefined : cards.find(card => card.id === draft.anchorId) ?? cards.filter(card => card.dshThreadId === draft.parentId).at(-1)
+  if (draft === null || parent === undefined) return ''
+  const x = parent.position.x + 365; const y = parent.position.y
+  const continuing = draft.kind === 'continue'
+  return `<article class="thread-card draft-card" style="left:${x}px;top:${y}px;--thread-color:#3478f6">
+    <div class="thread-card-head"><span class="topic-dot"></span><strong>${continuing ? '新的追问' : '新的分支'}</strong></div>
+    <form class="draft-branch-form" data-draft><textarea maxlength="4000" placeholder="${continuing ? '输入追问' : '输入这个分支的新问题'}" ${draft.sending ? 'disabled' : ''}>${escapeHtml(draft.text)}</textarea><div><button type="button" data-action="cancel-draft" ${draft.sending ? 'disabled' : ''}>取消</button><button class="primary" type="submit" ${draft.sending ? '正在发送' : continuing ? '创建追问' : '创建分支'}</button></div></form>
+  </article>`
+}
+
+function renderCanvas() {
+  const threads = state.workspace?.threads ?? []
+  if (threads.length === 0 && state.draft?.kind !== 'new') return `<section class="empty-canvas"><strong>当前工作目录还没有 DSH 对话。</strong><p>点击新会话，在画布中输入第一条消息。</p><div><button class="primary" type="button" data-action="create-session">新建会话</button></div></section>`
+  const cards = conversationCards(threads)
+  return `<section class="canvas-view"><div class="canvas-viewport"><div class="canvas-grid" style="transform:scale(${state.zoom})"><svg class="connectors" viewBox="0 0 1600 1000">${canvasConnectors(cards)}</svg><div class="cards-layer">${cards.map(conversationCard).join('')}${draftCard(cards)}</div></div></div></section>`
+}
+
+function isProcessMessage(message) {
+  if (message.kind === 'tool' || message.kind === 'tool-result') return true
+  return message.kind === 'assistant' && /(?:^|\n)\s*(?:bash|pwsh|powershell|web_search|web_fetch|browser|read_file|write_file)\s*\n\s*\{/.test(message.text)
+}
+
+function processSummary(text) {
+  return text.replace(/\s+/g, ' ').trim().slice(0, 140) || '工具调用记录'
+}
+
+function threadMessage(thread, message) {
+  const label = message.kind === 'user' ? '你' : 'DSH'
+  const branch = message.kind === 'assistant' && Number.isInteger(message.sourceSeq)
+    ? `<button data-action="open-branch" data-thread="${thread.id}" data-seq="${message.sourceSeq}">从此回答分支</button>`
+    : ''
+  const messageId = `${thread.id}:${message.sourceSeq ?? `${message.kind}:${message.at}`}`
+  const collapsible = isProcessMessage(message)
+  const expanded = state.expandedMessageIds.has(messageId)
+  const fold = collapsible ? `<button class="message-fold" data-action="toggle-message" data-message="${escapeHtml(messageId)}" aria-label="${expanded ? '收起过程记录' : '展开过程记录'}" title="${expanded ? '收起' : '展开'}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3.5 4.5 4.5L6 12.5"/></svg></button>` : ''
+  const body = message.pending && message.text === '' ? '<p>正在回复</p>' : `${collapsible && !expanded ? `<p class="message-summary">${escapeHtml(processSummary(message.text))}</p>` : renderMarkdown(message.text)}${message.pending ? '<p class="message-streaming">正在回复</p>' : ''}`
+  return `<article class="message message-${message.kind}${message.pending ? ' message-pending' : ''}${collapsible ? ' message-collapsible' : ''}${expanded ? ' expanded' : ''}"><header><span>${label}</span><time>${formatTime(message.at)}</time>${branch}${fold}</header>${body}</article>`
+}
+
+function renderThread() {
+  const thread = currentThread()
+  if (thread === null) return renderCanvas()
+  const messages = messagesFor(thread)
+  const waiting = state.pendingReplies.has(thread.dshSessionId)
+  return `<section class="detail-view"><div class="detail-heading"><div><span class="eyebrow">${thread.parentId === null ? 'DSH 会话' : 'DSH 分支'}</span><h1>${escapeHtml(questionFor(thread))}</h1><p>${escapeHtml(thread.dshSessionTitle ?? thread.title)}</p></div><div class="detail-actions"><button data-action="show-canvas">返回画布</button><button data-action="open-branch" data-thread="${thread.id}">创建分支</button><button data-action="open-dsh" data-thread="${thread.id}">打开 DSH</button></div></div><div class="message-stream">${messages.map(message => threadMessage(thread, message)).join('') || '<div class="note-empty">等待这条会话的第一条消息。</div>'}</div><form class="message-composer" data-compose="${thread.id}"><textarea maxlength="4000" placeholder="继续当前会话" ${waiting ? 'disabled' : ''}></textarea><button class="primary" type="submit" ${waiting ? 'disabled' : ''}>${waiting ? '等待回复' : '发送'}</button></form></section>`
+}
+
+function render() {
+  const detail = state.mode === 'thread' ? document.querySelector('.detail-view') : null
+  const detailScrollTop = detail instanceof HTMLElement ? detail.scrollTop : null
+  const workspace = state.workspace
+  const threads = workspace?.threads ?? []
+  const view = state.mode === 'thread' ? renderThread() : renderCanvas()
+  const choices = workspaceChoices()
+  const selectedWorkspaceId = state.selectedDshWorkspaceId ?? workspace?.id
+  const canvasControls = state.mode === 'canvas' && (threads.length > 0 || state.draft?.kind === 'new') ? `<div class="canvas-controls"><button data-action="layout">整理节点</button><button data-action="zoom-out" aria-label="缩小">-</button><span>${Math.round(state.zoom * 100)}%</span><button data-action="zoom-in" aria-label="放大">+</button></div>` : ''
+  const detailAvailable = currentThread() !== null
+  const canvasTabs = `<nav class="canvas-tabs" aria-label="会话地图视图"><button class="${state.mode === 'canvas' ? 'active' : ''}" data-action="show-canvas">地图</button><button class="${state.mode === 'thread' ? 'active' : ''}" data-action="show-thread" data-thread="${state.activeId ?? ''}" ${detailAvailable ? '' : 'disabled'}>详情</button></nav>`
+  app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><label class="workspace-label"><span>工作区</span><span class="workspace-select"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2.5 4.75h3l1.2 1.5h6.8v5.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"/></svg><select data-action="select-workspace" aria-label="选择工作区" ${state.draft !== null ? 'disabled' : ''}>${choices.map(item => `<option value="${item.id}" title="${escapeHtml(item.path ?? item.title)}" ${item.id === selectedWorkspaceId ? 'selected' : ''}>${escapeHtml(item.title)}</option>`).join('')}</select></span></label><div class="sidebar-heading"><span>会话</span></div><nav class="thread-tree">${threads.map(thread => `<button class="tree-row ${thread.id === state.activeId ? 'active' : ''}" data-action="select-thread" data-thread="${thread.id}" style="--thread-color:#374151"><span class="tree-dot"></span><span>${escapeHtml(questionFor(thread))}</span>${thread.parentId === null ? '' : '<i>分支</i>'}</button>`).join('') || '<p class="tree-empty">暂未同步会话</p>'}</nav></aside><header class="topbar"><div class="view-switch" role="group" aria-label="视图切换"><button data-action="close" type="button" aria-pressed="false">对话</button><button class="active" type="button" aria-pressed="true">会话地图</button></div>${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message">${escapeHtml(state.error)}</div>` : ''}${canvasTabs}${view}</section></main>`
+  installDragging()
+  if (detailScrollTop !== null) window.requestAnimationFrame(() => {
+    const nextDetail = document.querySelector('.detail-view')
+    if (nextDetail instanceof HTMLElement) nextDetail.scrollTop = detailScrollTop
+  })
+}
+
+function renderPreservingDetailScroll() {
+  render()
+}
+
+function installDragging() {
+  for (const handle of document.querySelectorAll('[data-drag-card]')) handle.addEventListener('pointerdown', event => {
+    const cardId = event.currentTarget.dataset.dragCard
+    const card = event.currentTarget.closest('.thread-card')
+    if (cardId === undefined || !(card instanceof HTMLElement)) return
+    event.preventDefault()
+    const origin = { x: event.clientX, y: event.clientY, position: { x: Number.parseFloat(card.style.left), y: Number.parseFloat(card.style.top) } }
+    const move = moveEvent => { rememberCardPosition(cardId, { x: origin.position.x + (moveEvent.clientX - origin.x) / state.zoom, y: origin.position.y + (moveEvent.clientY - origin.y) / state.zoom }); render() }
+    const stop = () => { document.removeEventListener('pointermove', move) }
+    document.addEventListener('pointermove', move); document.addEventListener('pointerup', stop, { once: true })
+  })
+}
+
+function canvasViewport(target) {
+  return target instanceof Element ? target.closest('.canvas-viewport') : null
+}
+
+function zoomCanvas(viewport, nextZoom, clientX, clientY) {
+  const zoom = Math.min(1.4, Math.max(.6, Math.round(nextZoom * 100) / 100))
+  if (zoom === state.zoom) return
+  const bounds = viewport.getBoundingClientRect()
+  const x = (viewport.scrollLeft + clientX - bounds.left) / state.zoom
+  const y = (viewport.scrollTop + clientY - bounds.top) / state.zoom
+  state.zoom = zoom
+  render()
+  window.requestAnimationFrame(() => {
+    const nextViewport = document.querySelector('.canvas-viewport')
+    if (!(nextViewport instanceof HTMLElement)) return
+    nextViewport.scrollLeft = x * zoom - clientX + bounds.left
+    nextViewport.scrollTop = y * zoom - clientY + bounds.top
+  })
+}
+
+app.addEventListener('pointerdown', event => {
+  const viewport = canvasViewport(event.target)
+  if (!(viewport instanceof HTMLElement) || event.target instanceof Element && event.target.closest('.thread-card, button, textarea, select')) return
+  event.preventDefault()
+  const origin = { x: event.clientX, y: event.clientY, left: viewport.scrollLeft, top: viewport.scrollTop }
+  viewport.classList.add('is-panning')
+  viewport.setPointerCapture(event.pointerId)
+  const move = moveEvent => {
+    viewport.scrollLeft = origin.left - (moveEvent.clientX - origin.x)
+    viewport.scrollTop = origin.top - (moveEvent.clientY - origin.y)
+  }
+  const stop = () => {
+    viewport.classList.remove('is-panning')
+    viewport.removeEventListener('pointermove', move)
+  }
+  viewport.addEventListener('pointermove', move)
+  viewport.addEventListener('pointerup', stop, { once: true })
+  viewport.addEventListener('pointercancel', stop, { once: true })
+})
+
+app.addEventListener('wheel', event => {
+  const viewport = canvasViewport(event.target)
+  if (!(viewport instanceof HTMLElement)) return
+  const card = event.target instanceof Element ? event.target.closest('.thread-card') : null
+  if (card instanceof HTMLElement) {
+    const answer = card.querySelector('.thread-answer')
+    if (answer instanceof HTMLElement) {
+      event.preventDefault()
+      answer.scrollTop += event.deltaY
+    }
+    return
+  }
+  event.preventDefault()
+  zoomCanvas(viewport, state.zoom + (event.deltaY < 0 ? .05 : -.05), event.clientX, event.clientY)
+}, { passive: false })
+
+app.addEventListener('click', async event => {
+  const button = event.target.closest('[data-action]')
+  if (!(button instanceof HTMLElement)) return
+  const thread = state.workspace?.threads.find(item => item.id === button.dataset.thread)
+  try {
+    if (button.dataset.action === 'close') post('synapse:close')
+    if (button.dataset.action === 'toggle-sidebar') { state.sidebarCollapsed = !state.sidebarCollapsed; render() }
+    if (button.dataset.action === 'create-session') openNewSession()
+    if (button.dataset.action === 'open-current' && state.currentDsh !== null) post('synapse:open-session', { sessionId: state.currentDsh.id })
+    if (button.dataset.action === 'select-thread' && thread !== undefined) { state.activeId = thread.id; state.error = ''; render(); void loadThreadHistory(thread) }
+    if (button.dataset.action === 'show-thread' && thread !== undefined) { state.activeId = thread.id; state.mode = 'thread'; render(); void loadThreadHistory(thread) }
+    if (button.dataset.action === 'show-canvas') { state.mode = 'canvas'; render() }
+    if (button.dataset.action === 'open-continue' && thread !== undefined) openContinue(thread, button.dataset.card)
+    if (button.dataset.action === 'open-branch' && thread !== undefined) {
+      const requestedSeq = Number(button.dataset.seq)
+      if (button.dataset.card !== undefined && !Number.isInteger(requestedSeq)) return setError('请等待这张卡片的最终回答后再创建分支')
+      const fallbackSeq = latestMessage(thread, 'assistant')?.sourceSeq
+      openBranch(thread, Number.isInteger(requestedSeq) ? requestedSeq : fallbackSeq, button.dataset.card)
+    }
+    if (button.dataset.action === 'cancel-draft') { state.draft = null; render() }
+    if (button.dataset.action === 'toggle-message' && button.dataset.message !== undefined) { state.expandedMessageIds.has(button.dataset.message) ? state.expandedMessageIds.delete(button.dataset.message) : state.expandedMessageIds.add(button.dataset.message); renderPreservingDetailScroll() }
+    if (button.dataset.action === 'open-dsh' && thread?.dshSessionId !== null) post('synapse:open-session', { sessionId: thread.dshSessionId })
+    if (button.dataset.action === 'archive-thread' && thread !== undefined) await archiveThread(thread)
+    if (button.dataset.action === 'zoom-in') { state.zoom = Math.min(1.3, state.zoom + .1); render() }
+    if (button.dataset.action === 'zoom-out') { state.zoom = Math.max(.7, state.zoom - .1); render() }
+    if (button.dataset.action === 'layout' && state.workspace !== null) {
+      resetCardPositions()
+      const roots = state.workspace.threads.filter(item => item.parentId === null); const index = threadsById()
+      await Promise.all(state.workspace.threads.map((thread, order) => { const parent = thread.parentId === null ? null : index.get(thread.parentId); thread.position = parent === null ? { x: 86, y: 82 + roots.indexOf(thread) * 236 } : { x: parent.position.x + 400, y: parent.position.y + (order % 3) * 210 }; return api(`/synapse/api/threads/${thread.id}`, { method: 'PATCH', body: JSON.stringify({ position: thread.position }) }) }))
+      render()
+    }
+  } catch (error) { setError(error) }
+})
+
+app.addEventListener('change', event => {
+  const select = event.target.closest('[data-action="select-workspace"]')
+  if (!(select instanceof HTMLSelectElement)) return
+  const choice = workspaceChoices().find(item => item.id === select.value)
+  if (choice?.source === 'dsh') void openDshWorkspace(choice.id).catch(setError)
+  else if (choice !== undefined) { state.selectedDshWorkspaceId = null; void openWorkspace(choice.id).catch(setError) }
+})
+app.addEventListener('input', event => { const input = event.target; if (input instanceof HTMLTextAreaElement && input.closest('[data-draft]') && state.draft !== null) state.draft.text = input.value })
+app.addEventListener('submit', event => {
+  const form = event.target
+  if (!(form instanceof HTMLFormElement)) return
+  if (form.matches('[data-draft]')) { event.preventDefault(); void submitDraft(); return }
+  const thread = state.workspace?.threads.find(item => item.id === form.dataset.compose)
+  const input = form.querySelector('textarea')
+  if (thread === undefined || !(input instanceof HTMLTextAreaElement) || input.value.trim() === '') return
+  event.preventDefault()
+  const text = input.value.trim()
+  input.value = ''
+  void sendMessage(thread, text).catch(setError)
+})
+
+window.addEventListener('message', event => {
+  if (event.origin !== window.location.origin || event.data?.source !== 'dsh-synapse') return
+  const data = event.data
+  if (data.type === 'synapse:workspaces') {
+    state.dshWorkspaces = Array.isArray(data.workspaces) ? data.workspaces.filter(workspace => typeof workspace?.id === 'string' && typeof workspace.title === 'string' && Array.isArray(workspace.sessionIds)) : []
+    const current = currentDshWorkspace()
+    if (current !== undefined && current.id !== state.selectedDshWorkspaceId) void openDshWorkspace(current.id).catch(setError)
+    else if (state.selectedDshWorkspaceId !== null) void openDshWorkspace(state.selectedDshWorkspaceId).catch(setError)
+    else if (canReplaceView()) render()
+  }
+  if (data.type === 'synapse:current-session') {
+    const previousId = state.currentDsh?.id
+    state.currentDsh = data.session
+    if (previousId !== data.session?.id) void openCurrentWorkspace().then(opened => { if (!opened && canReplaceView()) render() }).catch(setError)
+    else if (canReplaceView()) render()
+  }
+  if (data.type === 'synapse:live-reply' && typeof data.sessionId === 'string') {
+    const thread = state.workspace?.threads.find(item => item.dshSessionId === data.sessionId)
+    if (thread !== undefined) {
+      if (data.running === true) state.liveReplies.set(data.sessionId, { running: true, text: typeof data.text === 'string' ? data.text : '' })
+      else state.liveReplies.delete(data.sessionId)
+      if (canReplaceView() || state.pendingReplies.has(data.sessionId)) render()
+    }
+  }
+  if (data.type === 'synapse:forked-session' || data.type === 'synapse:created-session' || data.type === 'synapse:message-sent') settleRpc(data.requestId, data.session ?? data)
+  if (data.type === 'synapse:bridge-error') { settleRpc(data.requestId, undefined, new Error(data.message)); if (data.requestId === undefined) setError(data.message) }
+})
+
+post('synapse:request-current')
+refreshSummaries().catch(setError)
+let polling = false
+async function pollProjection() {
+  if (polling || document.hidden) return
+  polling = true
+  try {
+    await refreshProjection()
+  } finally { polling = false }
+}
+window.setInterval(() => { void pollProjection() }, 1_000)
