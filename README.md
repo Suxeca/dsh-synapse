@@ -36,14 +36,14 @@ corepack pnpm dsh plugin --profile web add github:liangmianya/dsh-synapse
 corepack pnpm dsh web
 ```
 
-GitHub 安装会执行本项目的 `prepare` 脚本。若 pnpm 提示需要授权构建脚本，请在 DSH profile 的 `pnpm-workspace.yaml` 中加入：
+GitHub 安装会执行本项目的 `prepare` 脚本。若 pnpm 提示需要授权构建脚本，请把 pnpm 打印的确切键（包名加其拉取的 tarball 地址，内含 commit）复制进 DSH profile 的 `pnpm-workspace.yaml`：
 
 ```yaml
 allowBuilds:
-  dsh-synapse: true
+  "dsh-synapse@https://codeload.github.com/liangmianya/dsh-synapse/tar.gz/<commit>": true
 ```
 
-然后重新执行安装命令。
+然后重新执行安装命令。在 pnpm 10.x 上裸包名匹配不到 git 依赖；上游推送新 commit 后该键会变化，届时复制 pnpm 新打印的键即可。
 
 #### 本地开发安装
 
@@ -103,14 +103,14 @@ corepack pnpm dsh plugin --profile web add github:liangmianya/dsh-synapse
 corepack pnpm dsh web
 ```
 
-GitHub installs run this package's `prepare` script. If pnpm asks for build-script permission, add the following to the DSH profile's `pnpm-workspace.yaml`:
+GitHub installs run this package's `prepare` script. If pnpm asks for build-script permission, copy the exact key pnpm printed — the package name plus its fetched tarball URL, which embeds the commit — into the DSH profile's `pnpm-workspace.yaml`:
 
 ```yaml
 allowBuilds:
-  dsh-synapse: true
+  "dsh-synapse@https://codeload.github.com/liangmianya/dsh-synapse/tar.gz/<commit>": true
 ```
 
-Then rerun the install command.
+Then rerun the install command. On pnpm 10.x a bare package name does not match a git-hosted dependency; the key changes when the upstream repository pushes a new commit, so copy the newly printed key then.
 
 #### Install a local checkout
 
