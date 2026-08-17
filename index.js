@@ -438,6 +438,7 @@ function normalizeState(value) {
   if (state.version !== 4) {
     if (foldLegacyToolCards(state.workspaces)) migrated = true
     state.version = 4
+    migrated = true
   }
   return { state, migrated }
 }
