@@ -36,7 +36,7 @@ window.__ModuleLoader__.load({
         if (!result.ok) throw new Error(result.error?.message ?? 'DSH 未接受这条消息')
       }
       const style = document.createElement('style')
-      style.textContent = '.dsh-synapse-switch{position:fixed;z-index:80;top:12px;left:50%;display:flex;gap:2px;transform:translateX(-50%);border:1px solid #d1d5db;border-radius:999px;background:rgba(255,255,255,.96);padding:3px;backdrop-filter:blur(10px)}.dsh-synapse-switch button{height:28px;border:0;border-radius:999px;background:transparent;padding:0 11px;color:#6b7280;font:600 12px Inter,system-ui,sans-serif;cursor:pointer;white-space:nowrap}.dsh-synapse-switch button:hover{background:#f3f4f6;color:#111827}.dsh-synapse-switch button.active{background:#111827;color:#fff}.dsh-synapse-switch button:focus-visible{outline:2px solid #111827;outline-offset:2px}.dsh-synapse-overlay{position:fixed;z-index:100;inset:0;background:#f5f7fa}.dsh-synapse-overlay[hidden]{display:none}.dsh-synapse-overlay iframe{display:block;width:100%;height:100%;border:0}'
+      style.textContent = '.dsh-synapse-switch{position:fixed;z-index:80;top:12px;left:50%;display:flex;gap:2px;transform:translateX(-50%);border:1px solid #d1d5db;border-radius:999px;background:rgba(255,255,255,.96);padding:3px;backdrop-filter:blur(10px)}.dsh-synapse-switch button{height:28px;border:0;border-radius:999px;background:transparent;padding:0 11px;color:#6b7280;font:600 12px Inter,system-ui,sans-serif;cursor:pointer;white-space:nowrap}.dsh-synapse-switch button:hover{background:#f3f4f6;color:#111827}.dsh-synapse-switch button.active{background:#111827;color:#fff}.dsh-synapse-switch button:focus-visible{outline:2px solid #111827;outline-offset:2px}.dsh-synapse-overlay{position:fixed;z-index:100;inset:0;background:#f5f7fa}.dsh-synapse-overlay.is-opening{visibility:hidden}.dsh-synapse-overlay[hidden]{display:none}.dsh-synapse-overlay iframe{display:block;width:100%;height:100%;border:0}'
       document.head.append(style)
       const host = document.createElement('div')
       host.className = 'dsh-synapse-host'
@@ -54,7 +54,13 @@ window.__ModuleLoader__.load({
         mapButton.classList.toggle('active', showingMap)
         mapButton.setAttribute('aria-pressed', String(showingMap))
       }
-      const close = () => { overlay.hidden = true; setView('dialog') }
+      const close = () => {
+        window.clearTimeout(mapOpenFallback)
+        mapOpening = false
+        overlay.classList.remove('is-opening')
+        overlay.hidden = true
+        setView('dialog')
+      }
       const send = (type, payload) => { frame.contentWindow?.postMessage({ source: 'dsh-synapse', type, ...payload }, location.origin) }
       let syncQueued = false
       let knownSessionIds = new Set()
@@ -97,10 +103,37 @@ window.__ModuleLoader__.load({
           send('synapse:current-session', { session: currentSession(ctx) })
         }
       }
-      const open = () => { overlay.hidden = false; setView('map'); syncCurrentSession() }
+      let mapOpenFallback = 0
+      let mapOpening = false
+      const showMapOverlay = () => {
+        window.clearTimeout(mapOpenFallback)
+        mapOpening = false
+        overlay.hidden = false
+        overlay.classList.remove('is-opening')
+        syncCurrentSession()
+      }
+      const open = () => {
+        window.clearTimeout(mapOpenFallback)
+        mapOpening = true
+        setView('map')
+        // Keep the iframe laid out while hidden so its canvas can receive a
+        // real scroll offset. display:none would clamp scrollTop back to zero.
+        overlay.hidden = false
+        overlay.classList.add('is-opening')
+        window.requestAnimationFrame(() => {
+          send('synapse:map-opened')
+          syncCurrentSession()
+        })
+        mapOpenFallback = window.setTimeout(showMapOverlay, 300)
+      }
+      const onFrameLoad = () => {
+        syncCurrentSession()
+        if (mapOpening) send('synapse:map-opened')
+      }
       const onMessage = event => {
         if (event.origin !== location.origin || event.data?.source !== 'dsh-synapse') return
         if (event.data.type === 'synapse:close') return close()
+        if (event.data.type === 'synapse:map-ready') return showMapOverlay()
         if (event.data.type === 'synapse:request-current') {
           send('synapse:workspaces', { workspaces: workspaceSnapshot(ctx) })
           return send('synapse:current-session', { session: currentSession(ctx) })
@@ -142,13 +175,13 @@ window.__ModuleLoader__.load({
       const unsubscribeWorkspaces = ctx.workspaces.list.subscribe(syncCurrentSession)
       dialogButton.addEventListener('click', close)
       mapButton.addEventListener('click', open)
-      frame.addEventListener('load', syncCurrentSession)
+      frame.addEventListener('load', onFrameLoad)
       window.addEventListener('message', onMessage)
       window.addEventListener('keydown', onKeyDown)
       ctx.effect(() => () => {
         dialogButton.removeEventListener('click', close)
         mapButton.removeEventListener('click', open)
-        frame.removeEventListener('load', syncCurrentSession)
+        frame.removeEventListener('load', onFrameLoad)
         window.removeEventListener('message', onMessage)
         window.removeEventListener('keydown', onKeyDown)
         unsubscribeSessions()

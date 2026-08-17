@@ -261,6 +261,11 @@ export class WorkspaceStore {
   dshThread(workspace, session) {
     let thread = workspace.threads.find(item => item.dshSessionId === session.id)
     if (thread !== undefined) {
+      if (typeof session.title === 'string' && session.title.trim() !== '') {
+        const title = session.title.slice(0, MAX_TITLE_LENGTH)
+        thread.title = title
+        thread.dshSessionTitle = title
+      }
       // `seedLength` is DSH's durable fork cut. Keep it even after the
       // session has been restored, when its in-process `firstLiveSeq` moves.
       const seedLength = session.header?.seedLength
@@ -280,7 +285,10 @@ export class WorkspaceStore {
       dshSessionId: session.id,
       dshSessionTitle: typeof session.title === 'string' ? session.title.slice(0, MAX_TITLE_LENGTH) : null,
       color: TOPIC_COLORS[workspace.threads.length % TOPIC_COLORS.length],
-      position: parent === undefined ? { x: 86, y: 82 + workspace.threads.length * 220 } : { x: parent.position.x + 400, y: parent.position.y + siblings.length * 230 },
+      // DSH projection stores only a neutral semantic anchor. The visual map
+      // lays out visible cards from the current conversation graph each render,
+      // so old/archived session counts must never leak into future coordinates.
+      position: parent === undefined ? { x: 86, y: 82 } : { x: parent.position.x + 400, y: parent.position.y },
       createdAt: now,
       updatedAt: now,
       messages: [],

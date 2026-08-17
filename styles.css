@@ -63,12 +63,11 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .canvas-tabs button:hover { background: transparent; color: #3478f6; }
 .canvas-tabs button.active { border-bottom-color: #3478f6; color: #3478f6; }
 .canvas-tabs button:disabled { cursor: default; opacity: .4; }
-.canvas-view { height: 100%; min-height: 0; flex: 1; }
-.canvas-viewport { position: relative; overflow: auto; background: #fff; cursor: grab; scrollbar-width: none; }
-.canvas-viewport::-webkit-scrollbar { display: none; width: 0; height: 0; }
+.canvas-view { display: flex; min-height: 0; flex: 1; }
+.canvas-viewport { position: relative; width: 100%; height: 100%; min-height: 0; flex: 1; overflow: hidden; background: #fff; cursor: grab; }
 .canvas-viewport.is-panning { cursor: grabbing; user-select: none; }
-.canvas-grid { position: relative; width: 1600px; height: 1000px; transform-origin: 0 0; }
-.connectors { position: absolute; inset: 0; width: 1600px; height: 1000px; overflow: visible; pointer-events: none; }
+.canvas-content { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
+.connectors { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .connectors path { fill: none; stroke: #aebbc9; stroke-width: 1.5; }
 .connectors .draft-connector { stroke: #3478f6; stroke-dasharray: 5 4; }
 .cards-layer { position: absolute; inset: 0; }
@@ -87,17 +86,17 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .branch-button:hover { border-color: #111827; background: #f3f4f6; }
 .thread-meta { gap: 7px; padding: 0 12px; color: #94a3b8; font-size: 10px; }
 .thread-meta span + span::before { content: '·'; margin-right: 7px; }
-.thread-answer { min-height: 0; margin: 10px 12px; overflow: auto; color: #526174; font-size: 12px; line-height: 1.58; overscroll-behavior: contain; scrollbar-color: #9ca3af transparent; scrollbar-width: thin; }
-.thread-answer::-webkit-scrollbar { width: 6px; height: 6px; }
+.thread-answer { min-width: 0; min-height: 0; margin: 10px 12px; overflow-x: hidden; overflow-y: auto; color: #526174; font-size: 12px; line-height: 1.58; overscroll-behavior: contain; scrollbar-color: #9ca3af transparent; scrollbar-width: thin; }
+.thread-answer::-webkit-scrollbar { width: 6px; height: 0; }
 .thread-answer::-webkit-scrollbar-track { background: transparent; }
 .thread-answer::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: #9ca3af; background-clip: padding-box; }
 .thread-answer::-webkit-scrollbar-thumb:hover { background: #6b7280; }
-.thread-answer p { margin: 0 0 8px; }
+.thread-answer p { margin: 0 0 8px; overflow-wrap: anywhere; }
 .thread-answer h1, .thread-answer h2, .thread-answer h3 { margin: 0 0 8px; color: #334155; font-size: 13px; line-height: 1.4; }
 .thread-answer ul, .thread-answer ol { margin: 0 0 8px; padding-left: 19px; }
 .thread-answer li + li { margin-top: 3px; }
-.thread-answer code { border-radius: 3px; background: #eef2f5; padding: 1px 3px; color: #334155; font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; }
-.thread-answer pre { margin: 0 0 8px; overflow: auto; border: 1px solid #e0e7ee; border-radius: 4px; background: #f7f9fb; padding: 8px; white-space: pre; }
+.thread-answer code { overflow-wrap: anywhere; border-radius: 3px; background: #eef2f5; padding: 1px 3px; color: #334155; font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; }
+.thread-answer pre { margin: 0 0 8px; overflow: hidden; border: 1px solid #e0e7ee; border-radius: 4px; background: #f7f9fb; padding: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .thread-answer pre code { background: transparent; padding: 0; }
 .thread-answer-empty { color: #94a3b8; }
 .thread-answer-pending, .message-pending p { color: #374151; font-style: italic; }
@@ -110,13 +109,10 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .draft-card strong { color: #1f2937; font-size: 13px; }
 .draft-branch-form { display: grid; justify-items: center; gap: 10px; padding: 10px 12px 12px; }
 .draft-branch-form textarea { width: 100%; min-height: 104px; resize: vertical; border: 1px solid #cbd8e3; border-radius: 5px; padding: 8px 12px; color: #334155; outline-color: #3478f6; }
-.draft-actions, .draft-branch-form > div { display: flex; justify-content: center; gap: 8px; }
-.draft-actions button, .draft-branch-form > div button { display: grid; width: 32px; height: 32px; min-height: 32px; place-items: center; border-radius: 50%; background: #fff; padding: 0; color: #64748b; }
-.draft-actions button.primary, .draft-branch-form > div button.primary { border-color: #3478f6; background: #3478f6; color: #fff; }
-.draft-actions svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
-.draft-branch-form > div:not(.draft-actions) button { font-size: 0; }
-.draft-branch-form > div:not(.draft-actions) button::after { width: 14px; height: 14px; content: ''; background: center / contain no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%2364748b' stroke-width='1.8' stroke-linecap='round'%3E%3Cpath d='m4.5 4.5 7 7m0-7-7 7'/%3E%3C/svg%3E"); }
-.draft-branch-form > div:not(.draft-actions) button.primary::after { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 12.5v-9M4.5 7 8 3.5 11.5 7'/%3E%3C/svg%3E"); }
+.draft-actions { display: flex; width: 100%; justify-content: flex-end; gap: 8px; }
+.draft-actions button { display: grid; width: 32px; height: 32px; min-height: 32px; place-items: center; border-radius: 50%; background: #fff; padding: 0; color: #64748b; line-height: 0; }
+.draft-actions button.primary { border-color: #3478f6; background: #3478f6; color: #fff; }
+.draft-actions svg { display: block; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
 .empty-canvas, .compare-empty { display: grid; align-content: center; justify-items: center; height: 100%; padding: 32px; text-align: center; }
 .empty-canvas strong, .compare-empty strong { color: #334155; font-size: 16px; }
 .empty-canvas p, .compare-empty p { max-width: 460px; color: #64748b; font-size: 13px; line-height: 1.65; }

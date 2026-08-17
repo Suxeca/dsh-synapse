@@ -147,6 +147,19 @@ test('syncs non-blank DSH sessions into the matching canvas', async () => {
   assert.equal(child.parentId, parent.id)
 })
 
+test('keeps DSH projection coordinates neutral instead of stacking by historical session count', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-synapse-neutral-position-'))
+  const store = new WorkspaceStore(join(directory, 'state.json'))
+  await store.syncSessions([
+    { id: 'first', title: '第一条', cwd: 'C:\\work\\canvas', blank: false },
+    { id: 'second', title: '第二条', cwd: 'C:\\work\\canvas', blank: false },
+  ])
+  const [workspace] = await store.list()
+  const graph = await store.get(workspace.id)
+
+  assert.deepEqual(graph.threads.map(thread => thread.position), [{ x: 86, y: 82 }, { x: 86, y: 82 }])
+})
+
 test('removes the canvas node when DSH removes the session', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-synapse-removed-session-'))
   const store = new WorkspaceStore(join(directory, 'state.json'))

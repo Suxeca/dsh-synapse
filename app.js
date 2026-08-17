@@ -1,4 +1,6 @@
 const app = document.querySelector('#app')
+if ('scrollRestoration' in history) history.scrollRestoration = 'manual'
+const LEGACY_CARD_POSITIONS_KEY = 'dsh-synapse:card-positions'
 const savedBranchAnchors = (() => {
   try {
     const value = JSON.parse(localStorage.getItem('dsh-synapse:branch-anchors') ?? '[]')
@@ -7,35 +9,57 @@ const savedBranchAnchors = (() => {
 })()
 const savedCardPositions = (() => {
   try {
-    const value = JSON.parse(localStorage.getItem('dsh-synapse:card-positions') ?? '[]')
-    return Array.isArray(value) ? value.filter(item => Array.isArray(item) && typeof item[0] === 'string' && Number.isFinite(item[1]?.x) && Number.isFinite(item[1]?.y)) : []
+    localStorage.removeItem(LEGACY_CARD_POSITIONS_KEY)
+    localStorage.removeItem('dsh-synapse:card-positions:v2')
   } catch { return [] }
+  return []
 })()
+const CARD_WIDTH = 310
+const CARD_HEIGHT = 276
+const CARD_GAP_Y = 42
+const CAMERA_INSET_X = 56
+const CAMERA_INSET_Y = 56
 const state = {
   summaries: [], workspace: null, activeId: null, mode: 'canvas', zoom: 1, currentDsh: null, sidebarCollapsed: false,
   dshWorkspaces: [], selectedDshWorkspaceId: null,
   historyBySession: new Map(), historyRequests: new Map(), pendingReplies: new Map(), pendingRpc: new Map(), liveReplies: new Map(),
   draft: null, error: '', workspaceLoad: 0, branchAnchors: new Map(savedBranchAnchors), cardPositions: new Map(savedCardPositions),
+  dragging: false, canvasGesture: false, canvasRefreshAfter: 0, canvasViewInitialized: false, canvasCamera: { x: 0, y: 0 },
   expandedMessageIds: new Set(),
 }
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]))
 const formatTime = value => new Date(value).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 const currentThread = () => state.workspace?.threads.find(thread => thread.id === state.activeId) ?? state.workspace?.threads[0] ?? null
+const threadListTitle = thread => thread.dshSessionTitle ?? thread.title ?? questionFor(thread)
 
 function rememberBranchAnchor(sessionId, cardId) {
   state.branchAnchors.set(sessionId, cardId)
   try { localStorage.setItem('dsh-synapse:branch-anchors', JSON.stringify([...state.branchAnchors])) } catch { /* Private browsing may disable local storage. */ }
 }
 
-function rememberCardPosition(cardId, position) {
+function persistCardPositions() {
+  // Dragging is a live canvas affordance. A hard refresh should return to the
+  // stable DSH-derived layout instead of restoring stale browser-local pixels.
+}
+
+function rememberCardPosition(cardId, position, aliases = []) {
   state.cardPositions.set(cardId, { x: Math.round(position.x), y: Math.round(position.y) })
-  try { localStorage.setItem('dsh-synapse:card-positions', JSON.stringify([...state.cardPositions])) } catch { /* Private browsing may disable local storage. */ }
+  for (const alias of aliases) state.cardPositions.set(alias, { x: Math.round(position.x), y: Math.round(position.y) })
+  persistCardPositions()
 }
 
 function resetCardPositions() {
   state.cardPositions.clear()
-  try { localStorage.removeItem('dsh-synapse:card-positions') } catch { /* Private browsing may disable local storage. */ }
+  try {
+    localStorage.removeItem(LEGACY_CARD_POSITIONS_KEY)
+    localStorage.removeItem('dsh-synapse:card-positions:v2')
+  } catch { /* Private browsing may disable local storage. */ }
+}
+
+function resetCanvasCamera() {
+  state.canvasViewInitialized = false
+  state.canvasCamera = { x: 0, y: 0 }
 }
 
 async function api(path, options = {}) {
@@ -87,7 +111,11 @@ function messagesFromEvents(events) {
 async function loadThreadHistory() {}
 
 function canReplaceView() {
-  return state.draft === null && !document.activeElement?.matches('textarea')
+  return state.draft === null && !state.dragging && !state.canvasGesture && Date.now() >= state.canvasRefreshAfter && !document.activeElement?.matches('textarea')
+}
+
+function deferCanvasRefresh(delay = 700) {
+  state.canvasRefreshAfter = Math.max(state.canvasRefreshAfter, Date.now() + delay)
 }
 
 function currentDshWorkspace() {
@@ -97,6 +125,11 @@ function currentDshWorkspace() {
 
 function selectedDshWorkspace() {
   return state.dshWorkspaces.find(workspace => workspace.id === state.selectedDshWorkspaceId)
+}
+
+function currentDshThread(threads = state.workspace?.threads ?? []) {
+  const id = state.currentDsh?.id
+  return typeof id === 'string' ? threads.find(thread => thread.dshSessionId === id) : undefined
 }
 
 function workspaceChoices() {
@@ -118,8 +151,11 @@ async function openDshWorkspace(id, { renderAfter = true } = {}) {
   state.selectedDshWorkspaceId = id
   const threads = await threadsForDshWorkspace(workspace)
   if (load !== state.workspaceLoad) return true
-  state.workspace = { id: `dsh:${workspace.id}`, title: workspace.title, cwd: workspace.path, threads }
-  state.activeId = state.workspace.threads.some(thread => thread.id === state.activeId) ? state.activeId : state.workspace.threads[0]?.id ?? null
+  const nextWorkspaceId = `dsh:${workspace.id}`
+  if (state.workspace?.id !== nextWorkspaceId) resetCanvasCamera()
+  state.workspace = { id: nextWorkspaceId, title: workspace.title, cwd: workspace.path, threads }
+  const currentThread = currentDshThread(state.workspace.threads)
+  state.activeId = currentThread?.id ?? (state.workspace.threads.some(thread => thread.id === state.activeId) ? state.activeId : state.workspace.threads[0]?.id ?? null)
   if (renderAfter && canReplaceView()) render()
   await Promise.all(state.workspace.threads.map(thread => loadThreadHistory(thread, false)))
   if (renderAfter && load === state.workspaceLoad && canReplaceView()) render()
@@ -150,6 +186,7 @@ async function openWorkspace(id, { renderAfter = true } = {}) {
   const load = ++state.workspaceLoad
   const body = await api(`/synapse/api/workspaces/${id}`)
   if (load !== state.workspaceLoad) return
+  if (state.workspace?.id !== body.workspace.id) resetCanvasCamera()
   state.workspace = body.workspace
   state.activeId = state.workspace.threads.some(thread => thread.id === state.activeId) ? state.activeId : state.workspace.threads[0]?.id ?? null
   if (renderAfter && canReplaceView()) render()
@@ -168,8 +205,10 @@ async function refreshProjection() {
 function openNewSession() {
   if (state.draft !== null) return
   state.mode = 'canvas'
+  state.activeId = null
   state.draft = { kind: 'new', text: '', sending: false }
   state.error = ''
+  resetCanvasCamera()
   render()
   window.setTimeout(() => document.querySelector('[data-draft] textarea')?.focus(), 0)
 }
@@ -178,7 +217,28 @@ async function archiveThread(thread) {
   if (!window.confirm(`归档画布中的「${thread.title}」及其分支？DSH 原会话会保留，可在 DSH 内继续查看。`)) return
   await api(`/synapse/api/threads/${thread.id}`, { method: 'DELETE' })
   state.historyBySession.delete(thread.dshSessionId)
-  state.activeId = null
+  if (state.workspace !== null) {
+    const removed = new Set([thread.id])
+    for (let changed = true; changed;) {
+      changed = false
+      for (const item of state.workspace.threads) {
+        if (item.parentId !== null && removed.has(item.parentId) && !removed.has(item.id)) {
+          removed.add(item.id)
+          changed = true
+        }
+      }
+    }
+    state.workspace.threads = state.workspace.threads.filter(item => !removed.has(item.id))
+    for (const key of [...state.cardPositions.keys()]) {
+      if ([...removed].some(id => key.startsWith(`${id}:`))) state.cardPositions.delete(key)
+    }
+    state.activeId = state.activeId !== null && state.workspace.threads.some(item => item.id === state.activeId)
+      ? state.activeId
+      : state.workspace.threads[0]?.id ?? null
+    render()
+  } else {
+    state.activeId = null
+  }
   await refreshSummaries()
 }
 
@@ -218,6 +278,7 @@ async function submitDraft() {
   const draft = state.draft
   const text = draft?.text.trim()
   if (draft === null || !text) return
+  const branchPosition = draft.kind === 'branch' && state.workspace !== null ? draftPlacement(conversationCards(state.workspace.threads))?.position : undefined
   draft.sending = true
   state.error = ''
   render()
@@ -227,7 +288,9 @@ async function submitDraft() {
       await dshRpc('synapse:send-message', { sessionId: session.id, text })
       state.draft = null
       render()
-      window.setTimeout(() => { void refreshProjection().catch(() => {}) }, 150)
+      window.setTimeout(() => {
+        void refreshProjection().catch(() => {})
+      }, 150)
       return
     }
     const parent = state.workspace?.threads.find(thread => thread.id === draft.parentId)
@@ -239,15 +302,24 @@ async function submitDraft() {
     }
     const session = await dshRpc('synapse:fork-session', { sessionId: parent.dshSessionId, atSeq: draft.atSeq })
     if (draft.anchorId !== undefined) rememberBranchAnchor(session.id, draft.anchorId)
-    const result = await api(`/synapse/api/threads/${parent.id}/branch`, { method: 'POST', body: JSON.stringify({ title: text.slice(0, 42), dshSessionId: session.id, dshSessionTitle: session.title }) })
+    const result = await api(`/synapse/api/threads/${parent.id}/branch`, { method: 'POST', body: JSON.stringify({ title: text.slice(0, 42), dshSessionId: session.id, dshSessionTitle: session.title, position: branchPosition }) })
+    if (state.workspace !== null && !state.workspace.threads.some(thread => thread.id === result.thread.id || thread.dshSessionId === result.thread.dshSessionId)) state.workspace.threads.push(result.thread)
     state.activeId = result.thread.id
     state.draft = null
+    state.pendingReplies.set(result.thread.dshSessionId, { text, at: Date.now() })
     render()
-    const child = { ...result.thread, messages: [] }
-    await sendMessage(child, text)
+    await dshRpc('synapse:send-message', { sessionId: result.thread.dshSessionId, text })
+    void loadThreadHistory(result.thread)
     await refreshProjection()
-    if (state.workspace !== null) await openWorkspace(state.workspace.id)
-  } catch (error) { state.draft = { ...draft, sending: false }; setError(error) }
+  } catch (error) {
+    if (draft.kind === 'branch') {
+      state.pendingReplies.delete(state.workspace?.threads.find(thread => thread.id === state.activeId)?.dshSessionId)
+      if (state.draft !== null) state.draft = { ...draft, sending: false }
+    } else {
+      state.draft = { ...draft, sending: false }
+    }
+    setError(error)
+  }
 }
 
 function threadsById() { return new Map((state.workspace?.threads ?? []).map(thread => [thread.id, thread])) }
@@ -341,6 +413,127 @@ function renderMarkdown(text) {
     : markdownBlock(part)).join('')
 }
 
+function overlapsCard(position, other) {
+  return position.x < other.x + CARD_WIDTH && position.x + CARD_WIDTH > other.x
+    && position.y < other.y + CARD_HEIGHT && position.y + CARD_HEIGHT > other.y
+}
+
+function firstAvailableCardPosition(position, occupied) {
+  const candidate = { x: Math.round(position.x), y: Math.max(82, Math.round(position.y)) }
+  while (true) {
+    const collisions = occupied.filter(other => overlapsCard(candidate, other))
+    if (collisions.length === 0) return candidate
+    candidate.y = Math.max(...collisions.map(other => other.y + CARD_HEIGHT + CARD_GAP_Y))
+  }
+}
+
+function connectorPath(fromPosition, toPosition) {
+  const fromX = fromPosition.x + CARD_WIDTH
+  const fromY = fromPosition.y + CARD_HEIGHT / 2
+  const toX = toPosition.x
+  const toY = toPosition.y + CARD_HEIGHT / 2
+  const bend = Math.min(110, Math.max(36, Math.abs(toX - fromX) * .2))
+  return `M ${fromX} ${fromY} C ${fromX + bend} ${fromY}, ${toX - bend} ${toY}, ${toX} ${toY}`
+}
+
+function connectorPathFromElements(fromCard, toCard) {
+  const fromX = Number.parseFloat(fromCard.style.left) + CARD_WIDTH
+  const fromY = Number.parseFloat(fromCard.style.top) + CARD_HEIGHT / 2
+  const toX = Number.parseFloat(toCard.style.left)
+  const toY = Number.parseFloat(toCard.style.top) + CARD_HEIGHT / 2
+  if (![fromX, fromY, toX, toY].every(Number.isFinite)) return null
+  const bend = Math.min(110, Math.max(36, Math.abs(toX - fromX) * .2))
+  return `M ${fromX} ${fromY} C ${fromX + bend} ${fromY}, ${toX - bend} ${toY}, ${toX} ${toY}`
+}
+
+function selectorValue(value) {
+  return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+function refreshCardConnectors(cardId) {
+  const viewport = document.querySelector('.canvas-viewport')
+  if (!(viewport instanceof HTMLElement)) return
+  const id = selectorValue(cardId)
+  for (const path of viewport.querySelectorAll(`.connectors path[data-from="${id}"], .connectors path[data-to="${id}"]`)) {
+    const fromId = path.getAttribute('data-from')
+    const toId = path.getAttribute('data-to')
+    if (fromId === null || toId === null) continue
+    const fromCard = viewport.querySelector(`[data-card-id="${selectorValue(fromId)}"]`)
+    const toCard = viewport.querySelector(`[data-card-id="${selectorValue(toId)}"]`)
+    if (!(fromCard instanceof HTMLElement) || !(toCard instanceof HTMLElement)) continue
+    const nextPath = connectorPathFromElements(fromCard, toCard)
+    if (nextPath !== null) path.setAttribute('d', nextPath)
+  }
+}
+
+function initialCanvasCamera(cards) {
+  const draft = state.draft?.kind === 'new' ? { id: 'draft:new', position: { x: 86, y: 82 } } : draftPlacement(cards)
+  const active = state.activeId === null ? undefined : cards.find(card => card.dshThreadId === state.activeId)
+  const focus = draft ?? active ?? cards[0]
+  const position = focus?.position
+  if (position === undefined) return { x: 0, y: 0 }
+  return { x: CAMERA_INSET_X - position.x * state.zoom, y: CAMERA_INSET_Y - position.y * state.zoom }
+}
+
+function placeConversationCards(cards) {
+  const saved = new Map(cards.flatMap(card => {
+    if (card.positionLocked !== true) return []
+    const position = state.cardPositions.get(card.id) ?? state.cardPositions.get(card.positionKey)
+    return position === undefined ? [] : [[card.id, { x: position.x, y: position.y }]]
+  }))
+  const occupied = []
+  for (const card of cards) {
+    const position = saved.get(card.id)
+    if (position !== undefined) {
+      card.position = position
+      continue
+    }
+    card.position = firstAvailableCardPosition(card.naturalPosition ?? card.position, occupied)
+    occupied.push(card.position)
+  }
+  return cards
+}
+
+function layoutConversationGraph(cards, threads) {
+  const childrenByThread = new Map()
+  for (const thread of threads) {
+    if (thread.parentId === null) continue
+    const children = childrenByThread.get(thread.parentId) ?? []
+    children.push(thread.id)
+    childrenByThread.set(thread.parentId, children)
+  }
+  const laneByThread = new Map()
+  const visitThread = threadId => {
+    if (laneByThread.has(threadId)) return
+    laneByThread.set(threadId, laneByThread.size)
+    for (const childId of childrenByThread.get(threadId) ?? []) visitThread(childId)
+  }
+  for (const thread of threads) if (thread.parentId === null) visitThread(thread.id)
+  for (const thread of threads) visitThread(thread.id)
+
+  const byId = new Map(cards.map(card => [card.id, card]))
+  const positioned = new Map()
+  const positionFor = (card, visiting = new Set()) => {
+    if (positioned.has(card.id)) return positioned.get(card.id)
+    if (visiting.has(card.id)) return { x: 86, y: 82 + (laneByThread.get(card.dshThreadId) ?? 0) * (CARD_HEIGHT + CARD_GAP_Y) }
+    visiting.add(card.id)
+    const parent = card.parentId === null ? undefined : byId.get(card.parentId)
+    const parentPosition = parent === undefined ? undefined : positionFor(parent, visiting)
+    const position = {
+      x: parentPosition === undefined ? 86 : parentPosition.x + 365,
+      y: 82 + (laneByThread.get(card.dshThreadId) ?? 0) * (CARD_HEIGHT + CARD_GAP_Y),
+    }
+    visiting.delete(card.id)
+    positioned.set(card.id, position)
+    return position
+  }
+  for (const card of cards) {
+    card.naturalPosition = positionFor(card)
+    if (!card.positionLocked) card.position = card.naturalPosition
+  }
+  return placeConversationCards(cards)
+}
+
 function conversationCards(threads) {
   const cards = []
   const cardsByThread = new Map()
@@ -359,15 +552,23 @@ function conversationCards(threads) {
       const answer = replies.at(-1) ?? null
       const turnIndex = turns.length
       const id = `${thread.id}:turn:${question.sourceSeq ?? messageIndex}`
-      const position = state.cardPositions?.get(id) ?? { x: thread.position.x + turnIndex * 365, y: thread.position.y }
+      const previous = turns.at(-1)
+      const positionKey = `${thread.id}:turn-index:${turnIndex}`
+      const naturalPosition = previous === undefined ? { x: 86, y: 82 } : { x: previous.naturalPosition.x + 365, y: previous.naturalPosition.y }
+      const savedPosition = state.cardPositions?.get(id) ?? state.cardPositions?.get(positionKey)
+      const positionLocked = savedPosition !== undefined
+      const position = positionLocked ? savedPosition : naturalPosition
       turns.push({
         id,
+        positionKey,
         dshThreadId: thread.id,
         sourceParentId: thread.parentId,
         parentId: null,
         sourceSeq: question.sourceSeq,
         turnIndex,
+        naturalPosition,
         position,
+        positionLocked,
         question: question.text,
         answer,
       })
@@ -377,18 +578,26 @@ function conversationCards(threads) {
     if (liveReply?.running && latestTurn !== undefined && (latestTurn.answer === null || latestTurn.answer.pending === true)) latestTurn.answer = { kind: 'assistant', text: liveReply.text, pending: true, at: new Date().toISOString() }
     if (turns.length === 0) {
       const id = `${thread.id}:turn:empty`
+      const positionKey = `${thread.id}:turn-index:0`
+      const naturalPosition = { x: 86, y: 82 }
+      const savedPosition = state.cardPositions?.get(id) ?? state.cardPositions?.get(positionKey)
+      const positionLocked = savedPosition !== undefined
       turns.push({
       id,
+      positionKey,
       dshThreadId: thread.id,
       sourceParentId: thread.parentId,
       parentId: null,
       sourceSeq: undefined,
       turnIndex: 0,
-      position: state.cardPositions?.get(id) ?? { ...thread.position },
+      naturalPosition,
+      position: positionLocked ? savedPosition : naturalPosition,
+      positionLocked,
       question: thread.dshSessionTitle ?? thread.title,
       answer: null,
       })
     }
+    turns.at(-1).canContinue = true
     cardsByThread.set(thread.id, turns)
     cards.push(...turns)
   }
@@ -409,7 +618,7 @@ function conversationCards(threads) {
       card.parentId = state.branchAnchors.get(card.dshThreadId) ?? inheritedTurn?.id ?? null
     }
   }
-  return cards
+  return layoutConversationGraph(cards, threads)
 }
 
 function canvasConnectors(cards) {
@@ -417,13 +626,12 @@ function canvasConnectors(cards) {
   const links = cards.map(card => {
     const parent = card.parentId === null ? null : index.get(card.parentId)
     if (parent === undefined || parent === null) return ''
-    const fromX = parent.position.x + 310; const fromY = parent.position.y + 138
-    const toX = card.position.x; const toY = card.position.y + 138; const bend = Math.min(110, Math.max(36, Math.abs(toX - fromX) * .2))
-    return `<path d="M ${fromX} ${fromY} C ${fromX + bend} ${fromY}, ${toX - bend} ${toY}, ${toX} ${toY}"></path>`
+    return `<path data-from="${escapeHtml(parent.id)}" data-to="${escapeHtml(card.id)}" d="${connectorPath(parent.position, card.position)}"></path>`
   })
-  const draft = state.draft
-  const parent = draft === null ? undefined : cards.find(card => card.id === draft.anchorId) ?? cards.filter(card => card.dshThreadId === draft.parentId).at(-1)
-  if (parent !== undefined) links.push(`<path class="draft-connector" d="M ${parent.position.x + 310} ${parent.position.y + 138} C ${parent.position.x + 365} ${parent.position.y + 138}, ${parent.position.x + 310} ${parent.position.y + 138}, ${parent.position.x + 365} ${parent.position.y + 138}"></path>`)
+  const placement = draftPlacement(cards)
+  if (placement !== null) {
+    links.push(`<path class="draft-connector" data-from="${escapeHtml(placement.parent.id)}" data-to="draft" d="${connectorPath(placement.parent.position, placement.position)}"></path>`)
+  }
   return links.join('')
 }
 
@@ -431,9 +639,12 @@ function conversationCard(card) {
   const active = card.dshThreadId === state.activeId ? 'active' : ''
   const source = card.parentId === null ? 'DSH 会话' : card.turnIndex === 0 ? 'DSH 分支' : '追问'
   const branchSequence = Number.isInteger(card.answer?.sourceSeq) ? ` data-seq="${card.answer.sourceSeq}"` : ''
-  return `<article class="thread-card ${active}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px;--thread-color:#3478f6">
+  const continueButton = card.canContinue === true
+    ? `<button class="branch-button" data-action="open-continue" data-thread="${card.dshThreadId}" data-card="${card.id}" title="添加追问" aria-label="为 ${escapeHtml(card.question)} 添加追问"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></svg></button>`
+    : ''
+  return `<article class="thread-card ${active}" data-card-id="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px;--thread-color:#3478f6">
     <button class="node-handle" data-drag-card="${card.id}" aria-label="拖动 ${escapeHtml(card.question)}" title="拖动卡片"></button>
-    <div class="thread-card-head"><span class="topic-dot"></span><button class="thread-title" data-action="show-thread" data-thread="${card.dshThreadId}" title="查看完整会话：${escapeHtml(card.question)}">${escapeHtml(card.question)}</button><button class="branch-button" data-action="open-continue" data-thread="${card.dshThreadId}" data-card="${card.id}" title="添加追问" aria-label="为 ${escapeHtml(card.question)} 添加追问"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></svg></button></div>
+    <div class="thread-card-head"><span class="topic-dot"></span><button class="thread-title" data-action="show-thread" data-thread="${card.dshThreadId}" title="查看完整会话：${escapeHtml(card.question)}">${escapeHtml(card.question)}</button>${continueButton}</div>
     <div class="thread-meta"><span>${source}</span><span>第 ${card.turnIndex + 1} 轮</span></div>
     <div class="thread-answer">${card.answer === null ? '<p class="thread-answer-empty">等待助手回复</p>' : card.answer.pending && card.answer.text === '' ? '<p class="thread-answer-pending">正在回复</p>' : `${renderMarkdown(card.answer.text)}${card.answer.pending ? '<p class="thread-answer-pending">正在回复</p>' : ''}`}</div>
     <footer><button data-action="show-thread" data-thread="${card.dshThreadId}">详情</button><button data-action="open-branch" data-thread="${card.dshThreadId}" data-card="${card.id}"${branchSequence}>分支</button><button data-action="open-dsh" data-thread="${card.dshThreadId}">打开 DSH</button><button data-action="archive-thread" data-thread="${card.dshThreadId}">归档</button></footer>
@@ -445,19 +656,26 @@ function draftActions(draft) {
   return `<div class="draft-actions"><button type="button" data-action="cancel-draft" ${disabled} aria-label="取消" title="取消"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 4.5 7 7m0-7-7 7"/></svg></button><button class="primary" type="submit" ${disabled} aria-label="发送" title="发送"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 12.5v-9M4.5 7 8 3.5 11.5 7"/></svg></button></div>`
 }
 
+function draftPlacement(cards) {
+  const draft = state.draft
+  if (draft === null || draft.kind === 'new') return null
+  const parent = cards.find(card => card.id === draft.anchorId) ?? cards.filter(card => card.dshThreadId === draft.parentId).at(-1)
+  if (parent === undefined) return null
+  return { parent, position: firstAvailableCardPosition({ x: parent.position.x + 365, y: parent.position.y }, cards.map(card => card.position)) }
+}
+
 function draftCard(cards) {
   const draft = state.draft
-  if (draft?.kind === 'new') return `<article class="thread-card draft-card first-session-card" style="left:86px;top:82px;--thread-color:#3478f6">
+  if (draft?.kind === 'new') return `<article class="thread-card draft-card first-session-card" data-card-id="draft" style="left:86px;top:82px;--thread-color:#3478f6">
     <div class="thread-card-head"><span class="topic-dot"></span><strong>新会话</strong></div>
     <form class="draft-branch-form" data-draft><textarea maxlength="4000" placeholder="输入第一条消息" ${draft.sending ? 'disabled' : ''}>${escapeHtml(draft.text)}</textarea>${draftActions(draft)}</form>
   </article>`
-  const parent = draft === null ? undefined : cards.find(card => card.id === draft.anchorId) ?? cards.filter(card => card.dshThreadId === draft.parentId).at(-1)
-  if (draft === null || parent === undefined) return ''
-  const x = parent.position.x + 365; const y = parent.position.y
+  const placement = draftPlacement(cards)
+  if (draft === null || placement === null) return ''
   const continuing = draft.kind === 'continue'
-  return `<article class="thread-card draft-card" style="left:${x}px;top:${y}px;--thread-color:#3478f6">
+  return `<article class="thread-card draft-card" data-card-id="draft" style="left:${placement.position.x}px;top:${placement.position.y}px;--thread-color:#3478f6">
     <div class="thread-card-head"><span class="topic-dot"></span><strong>${continuing ? '新的追问' : '新的分支'}</strong></div>
-    <form class="draft-branch-form" data-draft><textarea maxlength="4000" placeholder="${continuing ? '输入追问' : '输入这个分支的新问题'}" ${draft.sending ? 'disabled' : ''}>${escapeHtml(draft.text)}</textarea><div><button type="button" data-action="cancel-draft" ${draft.sending ? 'disabled' : ''}>取消</button><button class="primary" type="submit" ${draft.sending ? '正在发送' : continuing ? '创建追问' : '创建分支'}</button></div></form>
+    <form class="draft-branch-form" data-draft><textarea maxlength="4000" placeholder="${continuing ? '输入追问' : '输入这个分支的新问题'}" ${draft.sending ? 'disabled' : ''}>${escapeHtml(draft.text)}</textarea>${draftActions(draft)}</form>
   </article>`
 }
 
@@ -465,7 +683,11 @@ function renderCanvas() {
   const threads = state.workspace?.threads ?? []
   if (threads.length === 0 && state.draft?.kind !== 'new') return `<section class="empty-canvas"><strong>当前工作目录还没有 DSH 对话。</strong><p>点击新会话，在画布中输入第一条消息。</p><div><button class="primary" type="button" data-action="create-session">新建会话</button></div></section>`
   const cards = conversationCards(threads)
-  return `<section class="canvas-view"><div class="canvas-viewport"><div class="canvas-grid" style="transform:scale(${state.zoom})"><svg class="connectors" viewBox="0 0 1600 1000">${canvasConnectors(cards)}</svg><div class="cards-layer">${cards.map(conversationCard).join('')}${draftCard(cards)}</div></div></div></section>`
+  if (!state.canvasViewInitialized) {
+    state.canvasCamera = initialCanvasCamera(cards)
+    state.canvasViewInitialized = true
+  }
+  return `<section class="canvas-view"><div class="canvas-viewport"><div class="canvas-content" style="transform:translate(${state.canvasCamera.x}px, ${state.canvasCamera.y}px) scale(${state.zoom})"><svg class="connectors">${canvasConnectors(cards)}</svg><div class="cards-layer">${cards.map(conversationCard).join('')}${draftCard(cards)}</div></div></div></section>`
 }
 
 function isProcessMessage(message) {
@@ -525,7 +747,7 @@ function render() {
   const canvasControls = state.mode === 'canvas' && (threads.length > 0 || state.draft?.kind === 'new') ? `<div class="canvas-controls"><button data-action="layout">整理节点</button><button data-action="zoom-out" aria-label="缩小">-</button><span>${Math.round(state.zoom * 100)}%</span><button data-action="zoom-in" aria-label="放大">+</button></div>` : ''
   const detailAvailable = currentThread() !== null
   const canvasTabs = `<nav class="canvas-tabs" aria-label="会话地图视图"><button class="${state.mode === 'canvas' ? 'active' : ''}" data-action="show-canvas">地图</button><button class="${state.mode === 'thread' ? 'active' : ''}" data-action="show-thread" data-thread="${state.activeId ?? ''}" ${detailAvailable ? '' : 'disabled'}>详情</button></nav>`
-  app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><label class="workspace-label"><span>工作区</span><span class="workspace-select"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2.5 4.75h3l1.2 1.5h6.8v5.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"/></svg><select data-action="select-workspace" aria-label="选择工作区" ${state.draft !== null ? 'disabled' : ''}>${choices.map(item => `<option value="${item.id}" title="${escapeHtml(item.path ?? item.title)}" ${item.id === selectedWorkspaceId ? 'selected' : ''}>${escapeHtml(item.title)}</option>`).join('')}</select></span></label><div class="sidebar-heading"><span>会话</span></div><nav class="thread-tree">${threads.map(thread => `<button class="tree-row ${thread.id === state.activeId ? 'active' : ''}" data-action="select-thread" data-thread="${thread.id}" style="--thread-color:#374151"><span class="tree-dot"></span><span>${escapeHtml(questionFor(thread))}</span>${thread.parentId === null ? '' : '<i>分支</i>'}</button>`).join('') || '<p class="tree-empty">暂未同步会话</p>'}</nav></aside><header class="topbar"><div class="view-switch" role="group" aria-label="视图切换"><button data-action="close" type="button" aria-pressed="false">对话</button><button class="active" type="button" aria-pressed="true">会话地图</button></div>${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message">${escapeHtml(state.error)}</div>` : ''}${canvasTabs}${view}</section></main>`
+  app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><label class="workspace-label"><span>工作区</span><span class="workspace-select"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2.5 4.75h3l1.2 1.5h6.8v5.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"/></svg><select data-action="select-workspace" aria-label="选择工作区" ${state.draft !== null ? 'disabled' : ''}>${choices.map(item => `<option value="${item.id}" title="${escapeHtml(item.path ?? item.title)}" ${item.id === selectedWorkspaceId ? 'selected' : ''}>${escapeHtml(item.title)}</option>`).join('')}</select></span></label><div class="sidebar-heading"><span>会话</span></div><nav class="thread-tree">${threads.map(thread => `<button class="tree-row ${thread.id === state.activeId ? 'active' : ''}" data-action="select-thread" data-thread="${thread.id}" style="--thread-color:#374151"><span class="tree-dot"></span><span>${escapeHtml(threadListTitle(thread))}</span>${thread.parentId === null ? '' : '<i>分支</i>'}</button>`).join('') || '<p class="tree-empty">暂未同步会话</p>'}</nav></aside><header class="topbar"><div class="view-switch" role="group" aria-label="视图切换"><button data-action="close" type="button" aria-pressed="false">对话</button><button class="active" type="button" aria-pressed="true">会话地图</button></div>${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message">${escapeHtml(state.error)}</div>` : ''}${canvasTabs}${view}</section></main>`
   installDragging()
   if (detailScrollTop !== null) window.requestAnimationFrame(() => {
     const nextDetail = document.querySelector('.detail-view')
@@ -537,6 +759,11 @@ function renderPreservingDetailScroll() {
   render()
 }
 
+function applyCanvasTransform() {
+  const content = document.querySelector('.canvas-content')
+  if (content instanceof HTMLElement) content.style.transform = `translate(${state.canvasCamera.x}px, ${state.canvasCamera.y}px) scale(${state.zoom})`
+}
+
 function installDragging() {
   for (const handle of document.querySelectorAll('[data-drag-card]')) handle.addEventListener('pointerdown', event => {
     const cardId = event.currentTarget.dataset.dragCard
@@ -544,9 +771,32 @@ function installDragging() {
     if (cardId === undefined || !(card instanceof HTMLElement)) return
     event.preventDefault()
     const origin = { x: event.clientX, y: event.clientY, position: { x: Number.parseFloat(card.style.left), y: Number.parseFloat(card.style.top) } }
-    const move = moveEvent => { rememberCardPosition(cardId, { x: origin.position.x + (moveEvent.clientX - origin.x) / state.zoom, y: origin.position.y + (moveEvent.clientY - origin.y) / state.zoom }); render() }
-    const stop = () => { document.removeEventListener('pointermove', move) }
-    document.addEventListener('pointermove', move); document.addEventListener('pointerup', stop, { once: true })
+    const aliases = card.dataset.positionKey === undefined ? [] : [card.dataset.positionKey]
+    let position = origin.position
+    let stopped = false
+    state.dragging = true
+    const move = moveEvent => {
+      position = { x: origin.position.x + (moveEvent.clientX - origin.x) / state.zoom, y: origin.position.y + (moveEvent.clientY - origin.y) / state.zoom }
+      state.cardPositions.set(cardId, { x: Math.round(position.x), y: Math.round(position.y) })
+      for (const alias of aliases) state.cardPositions.set(alias, { x: Math.round(position.x), y: Math.round(position.y) })
+      card.style.left = `${position.x}px`
+      card.style.top = `${position.y}px`
+      refreshCardConnectors(cardId)
+    }
+    const stop = () => {
+      if (stopped) return
+      stopped = true
+      document.removeEventListener('pointermove', move)
+      document.removeEventListener('pointerup', stop)
+      document.removeEventListener('pointercancel', stop)
+      rememberCardPosition(cardId, position, aliases)
+      state.dragging = false
+      deferCanvasRefresh(120)
+      render()
+    }
+    document.addEventListener('pointermove', move)
+    document.addEventListener('pointerup', stop)
+    document.addEventListener('pointercancel', stop)
   })
 }
 
@@ -558,36 +808,50 @@ function zoomCanvas(viewport, nextZoom, clientX, clientY) {
   const zoom = Math.min(1.4, Math.max(.6, Math.round(nextZoom * 100) / 100))
   if (zoom === state.zoom) return
   const bounds = viewport.getBoundingClientRect()
-  const x = (viewport.scrollLeft + clientX - bounds.left) / state.zoom
-  const y = (viewport.scrollTop + clientY - bounds.top) / state.zoom
+  const localX = clientX - bounds.left
+  const localY = clientY - bounds.top
+  const worldX = (localX - state.canvasCamera.x) / state.zoom
+  const worldY = (localY - state.canvasCamera.y) / state.zoom
   state.zoom = zoom
-  render()
-  window.requestAnimationFrame(() => {
-    const nextViewport = document.querySelector('.canvas-viewport')
-    if (!(nextViewport instanceof HTMLElement)) return
-    nextViewport.scrollLeft = x * zoom - clientX + bounds.left
-    nextViewport.scrollTop = y * zoom - clientY + bounds.top
-  })
+  state.canvasCamera = { x: localX - worldX * zoom, y: localY - worldY * zoom }
+  applyCanvasTransform()
+  const label = document.querySelector('.canvas-controls span')
+  if (label !== null) label.textContent = `${Math.round(state.zoom * 100)}%`
+}
+
+function zoomCanvasAtCenter(delta) {
+  const viewport = document.querySelector('.canvas-viewport')
+  if (!(viewport instanceof HTMLElement)) return
+  const bounds = viewport.getBoundingClientRect()
+  zoomCanvas(viewport, state.zoom + delta, bounds.left + bounds.width / 2, bounds.top + bounds.height / 2)
 }
 
 app.addEventListener('pointerdown', event => {
   const viewport = canvasViewport(event.target)
   if (!(viewport instanceof HTMLElement) || event.target instanceof Element && event.target.closest('.thread-card, button, textarea, select')) return
   event.preventDefault()
-  const origin = { x: event.clientX, y: event.clientY, left: viewport.scrollLeft, top: viewport.scrollTop }
+  const origin = { x: event.clientX, y: event.clientY, camera: { ...state.canvasCamera } }
+  state.canvasGesture = true
   viewport.classList.add('is-panning')
   viewport.setPointerCapture(event.pointerId)
   const move = moveEvent => {
-    viewport.scrollLeft = origin.left - (moveEvent.clientX - origin.x)
-    viewport.scrollTop = origin.top - (moveEvent.clientY - origin.y)
+    state.canvasCamera = {
+      x: origin.camera.x + moveEvent.clientX - origin.x,
+      y: origin.camera.y + moveEvent.clientY - origin.y,
+    }
+    applyCanvasTransform()
   }
   const stop = () => {
     viewport.classList.remove('is-panning')
-    viewport.removeEventListener('pointermove', move)
+    document.removeEventListener('pointermove', move)
+    document.removeEventListener('pointerup', stop)
+    document.removeEventListener('pointercancel', stop)
+    state.canvasGesture = false
+    deferCanvasRefresh(120)
   }
-  viewport.addEventListener('pointermove', move)
-  viewport.addEventListener('pointerup', stop, { once: true })
-  viewport.addEventListener('pointercancel', stop, { once: true })
+  document.addEventListener('pointermove', move)
+  document.addEventListener('pointerup', stop)
+  document.addEventListener('pointercancel', stop)
 })
 
 app.addEventListener('wheel', event => {
@@ -599,6 +863,7 @@ app.addEventListener('wheel', event => {
     if (answer instanceof HTMLElement) {
       event.preventDefault()
       answer.scrollTop += event.deltaY
+      deferCanvasRefresh()
     }
     return
   }
@@ -608,7 +873,17 @@ app.addEventListener('wheel', event => {
 
 app.addEventListener('click', async event => {
   const button = event.target.closest('[data-action]')
-  if (!(button instanceof HTMLElement)) return
+  if (!(button instanceof HTMLElement)) {
+    const card = event.target instanceof Element ? event.target.closest('.thread-card[data-thread]:not(.draft-card)') : null
+    if (!(card instanceof HTMLElement) || event.target instanceof Element && event.target.closest('.node-handle, textarea, select, form')) return
+    const thread = state.workspace?.threads.find(item => item.id === card.dataset.thread)
+    if (thread === undefined) return
+    state.activeId = thread.id
+    state.error = ''
+    render()
+    void loadThreadHistory(thread)
+    return
+  }
   const thread = state.workspace?.threads.find(item => item.id === button.dataset.thread)
   try {
     if (button.dataset.action === 'close') post('synapse:close')
@@ -629,12 +904,11 @@ app.addEventListener('click', async event => {
     if (button.dataset.action === 'toggle-message' && button.dataset.message !== undefined) { state.expandedMessageIds.has(button.dataset.message) ? state.expandedMessageIds.delete(button.dataset.message) : state.expandedMessageIds.add(button.dataset.message); renderPreservingDetailScroll() }
     if (button.dataset.action === 'open-dsh' && thread?.dshSessionId !== null) post('synapse:open-session', { sessionId: thread.dshSessionId })
     if (button.dataset.action === 'archive-thread' && thread !== undefined) await archiveThread(thread)
-    if (button.dataset.action === 'zoom-in') { state.zoom = Math.min(1.3, state.zoom + .1); render() }
-    if (button.dataset.action === 'zoom-out') { state.zoom = Math.max(.7, state.zoom - .1); render() }
+    if (button.dataset.action === 'zoom-in') zoomCanvasAtCenter(.1)
+    if (button.dataset.action === 'zoom-out') zoomCanvasAtCenter(-.1)
     if (button.dataset.action === 'layout' && state.workspace !== null) {
       resetCardPositions()
-      const roots = state.workspace.threads.filter(item => item.parentId === null); const index = threadsById()
-      await Promise.all(state.workspace.threads.map((thread, order) => { const parent = thread.parentId === null ? null : index.get(thread.parentId); thread.position = parent === null ? { x: 86, y: 82 + roots.indexOf(thread) * 236 } : { x: parent.position.x + 400, y: parent.position.y + (order % 3) * 210 }; return api(`/synapse/api/threads/${thread.id}`, { method: 'PATCH', body: JSON.stringify({ position: thread.position }) }) }))
+      resetCanvasCamera()
       render()
     }
   } catch (error) { setError(error) }
@@ -664,6 +938,12 @@ app.addEventListener('submit', event => {
 window.addEventListener('message', event => {
   if (event.origin !== window.location.origin || event.data?.source !== 'dsh-synapse') return
   const data = event.data
+  if (data.type === 'synapse:map-opened') {
+    resetCanvasCamera()
+    state.mode = 'canvas'
+    render()
+    window.requestAnimationFrame(() => post('synapse:map-ready'))
+  }
   if (data.type === 'synapse:workspaces') {
     state.dshWorkspaces = Array.isArray(data.workspaces) ? data.workspaces.filter(workspace => typeof workspace?.id === 'string' && typeof workspace.title === 'string' && Array.isArray(workspace.sessionIds)) : []
     const current = currentDshWorkspace()
@@ -674,6 +954,8 @@ window.addEventListener('message', event => {
   if (data.type === 'synapse:current-session') {
     const previousId = state.currentDsh?.id
     state.currentDsh = data.session
+    const thread = currentDshThread()
+    if (thread !== undefined) state.activeId = thread.id
     if (previousId !== data.session?.id) void openCurrentWorkspace().then(opened => { if (!opened && canReplaceView()) render() }).catch(setError)
     else if (canReplaceView()) render()
   }
@@ -682,7 +964,7 @@ window.addEventListener('message', event => {
     if (thread !== undefined) {
       if (data.running === true) state.liveReplies.set(data.sessionId, { running: true, text: typeof data.text === 'string' ? data.text : '' })
       else state.liveReplies.delete(data.sessionId)
-      if (canReplaceView() || state.pendingReplies.has(data.sessionId)) render()
+      if (canReplaceView() || state.pendingReplies.has(data.sessionId)) scheduleLiveRender()
     }
   }
   if (data.type === 'synapse:forked-session' || data.type === 'synapse:created-session' || data.type === 'synapse:message-sent') settleRpc(data.requestId, data.session ?? data)
@@ -692,8 +974,16 @@ window.addEventListener('message', event => {
 post('synapse:request-current')
 refreshSummaries().catch(setError)
 let polling = false
+let liveRenderTimer = 0
+function scheduleLiveRender() {
+  if (liveRenderTimer !== 0 || !canReplaceView()) return
+  liveRenderTimer = window.setTimeout(() => {
+    liveRenderTimer = 0
+    if (canReplaceView()) renderPreservingDetailScroll()
+  }, 120)
+}
 async function pollProjection() {
-  if (polling || document.hidden) return
+  if (polling || document.hidden || !canReplaceView()) return
   polling = true
   try {
     await refreshProjection()
