@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -17,22 +17,24 @@ test('persists a workspace, a DSH-linked thread, and a message', async () => {
   assert.equal(saved.title, '调研 DSH 插件')
   assert.equal(saved.threads[0].dshSessionId, 'session-1')
   assert.equal(saved.threads[0].messages[0].text, '确定使用已有 Web Server')
-  assert.match(await readFile(dataFile, 'utf8'), /"version": 3/)
+  assert.match(await readFile(dataFile, 'utf8'), /"version": 4/)
 })
 
-test('projects committed DSH events once and keeps fork lineage', async () => {
+test('projects committed DSH events once, folds tool process into the assistant card, and keeps fork lineage', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-synapse-projection-'))
   const store = new WorkspaceStore(join(directory, 'state.json'))
   const parent = {
     id: 'session-parent', header: {}, firstLiveSeq: 0,
     events: [
       { type: 'user/message', seq: 0, time: 1, data: { content: [{ type: 'text', text: '分析登录异常' }] } },
-      { type: 'tool/call', seq: 1, time: 2, data: { name: 'bash', arguments: '{"cmd":"pnpm test"}' } },
+      { type: 'assistant/message', seq: 1, time: 2, data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: '我来检查。' }] } } },
+      { type: 'tool/call', seq: 2, time: 3, data: { turn: 1, step: 1, callId: 'c1', name: 'bash', arguments: '{"cmd":"pnpm test"}' } },
+      { type: 'tool/result', seq: 3, time: 4, data: { turn: 1, step: 1, message: { source: { kind: 'tool', callId: 'c1' }, content: [{ type: 'text', text: 'ok' }] } } },
     ],
   }
   await store.projectSession(parent)
-  await store.projectEvent(parent, parent.events[1])
-  const child = { id: 'session-child', header: { parentSession: 'session-parent' }, firstLiveSeq: 2, events: [] }
+  await store.projectEvent(parent, parent.events[2])
+  const child = { id: 'session-child', header: { parentSession: 'session-parent' }, firstLiveSeq: 4, events: [] }
   await store.projectSession(child, child.firstLiveSeq)
 
   const [workspace] = await store.list()
@@ -42,7 +44,48 @@ test('projects committed DSH events once and keeps fork lineage', async () => {
   assert.equal(workspace.title, 'DSH 任务')
   assert.equal(parentThread.messages.length, 2)
   assert.equal(parentThread.messages[0].kind, 'user')
+  assert.equal(parentThread.messages[1].kind, 'assistant')
+  assert.equal(parentThread.messages[1].process.length, 1)
+  assert.equal(parentThread.messages[1].process[0].name, 'bash')
+  assert.equal(parentThread.messages[1].process[0].result, 'ok')
+  assert.equal(parentThread.messages[1].process[0].error, null)
   assert.equal(childThread.parentId, parentThread.id)
+})
+
+test('migrates v3 tool cards into the assistant process records', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-synapse-migrate-'))
+  const dataFile = join(directory, 'state.json')
+  await writeFile(dataFile, JSON.stringify({
+    version: 3,
+    hiddenSessionIds: [],
+    workspaces: [{
+      id: 'w-1', kind: 'dsh', cwd: 'C:\\work\\migrate', title: 'migrate',
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      threads: [{
+        id: 't-1', title: '会话', parentId: null, dshSessionId: 's-1', dshSessionTitle: null,
+        color: '#0f766e', position: { x: 86, y: 82 }, sourceSeedLength: null,
+        createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+        messages: [
+          { id: 'm-1', kind: 'user', text: '帮我检查', at: '2026-01-01T00:00:00.000Z' },
+          { id: 'm-2', kind: 'assistant', text: '好的。', at: '2026-01-01T00:00:00.100Z' },
+          { id: 'm-3', kind: 'tool', text: 'read\n{"file_path":"a.js"}', at: '2026-01-01T00:00:00.200Z' },
+          { id: 'm-4', kind: 'tool-result', text: 'file content', at: '2026-01-01T00:00:00.300Z' },
+          { id: 'm-5', kind: 'tool', text: 'bash\n{"cmd":"pwd"}', at: '2026-01-01T00:00:00.400Z' },
+        ],
+      }],
+    }],
+  }, null, 2))
+  const store = new WorkspaceStore(dataFile)
+  const graph = await store.get('w-1')
+  const thread = graph.threads[0]
+  assert.equal(thread.messages.length, 2)
+  assert.equal(thread.messages[1].process.length, 2)
+  assert.equal(thread.messages[1].process[0].name, 'read')
+  assert.equal(thread.messages[1].process[0].arguments, '{"file_path":"a.js"}')
+  assert.equal(thread.messages[1].process[0].result, 'file content')
+  assert.equal(thread.messages[1].process[1].name, 'bash')
+  assert.equal(thread.messages[1].process[1].result, null)
+  assert.match(await readFile(dataFile, 'utf8'), /"version": 4/)
 })
 
 test('does not persist the DSH runtime context as a user conversation turn', async () => {

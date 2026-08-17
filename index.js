@@ -213,7 +213,7 @@ export class WorkspaceStore {
       if (migrated) await this.save()
     } catch (error) {
       if (error?.code !== 'ENOENT') throw new Error(`synapse: cannot read ${this.dataFile}: ${error.message}`)
-      this.state = { version: 3, hiddenSessionIds: [], workspaces: [] }
+      this.state = { version: 4, hiddenSessionIds: [], workspaces: [] }
       await this.save()
     }
   }
@@ -303,16 +303,67 @@ export class WorkspaceStore {
       workspace.updatedAt = thread.updatedAt
       return
     }
+    if (event.type === 'tool/call' || event.type === 'tool/result') {
+      this.foldToolProcess(thread, event)
+      workspace.updatedAt = thread.updatedAt
+      return
+    }
     const projection = projectableEvent(event)
     if (projection === null || thread.messages.some(message => message.sourceSeq === event.seq)) return
     const at = new Date(event.time).toISOString()
-    thread.messages.push({ id: randomUUID(), text: projection.text, kind: projection.kind, sourceSeq: event.seq, at })
+    const message = {
+      id: randomUUID(),
+      text: projection.text,
+      kind: projection.kind,
+      sourceSeq: event.seq,
+      at,
+      ...(projection.kind === 'assistant'
+        ? { turn: event.data.turn, step: event.data.step, process: [] }
+        : {}),
+    }
+    thread.messages.push(message)
     thread.updatedAt = at
     workspace.updatedAt = at
     if (thread.dshSessionTitle === null && projection.kind === 'user') {
       thread.title = titleFromText(projection.text)
       thread.dshSessionTitle = thread.title
     }
+  }
+
+  /**
+   * Fold one tool call or result into the assistant message of its own
+   * turn/step, keyed by `callId`, so a tool invocation never becomes a
+   * separate canvas card. A legacy assistant message without `turn`/`step` is
+   * the fallback target; an event with no such target is dropped.
+   */
+  foldToolProcess(thread, event) {
+    const at = new Date(event.time).toISOString()
+    const target = [...thread.messages].reverse().find(message =>
+      message.kind === 'assistant'
+      && (message.turn === event.data.turn && message.step === event.data.step
+        || message.turn === undefined && message.step === undefined))
+    if (target === undefined) return
+    const process = target.process ??= []
+    const callId = String(event.type === 'tool/call' ? event.data.callId : event.data.message?.source?.callId ?? '')
+    const entry = process.find(item => item.callId === callId)
+    if (event.type === 'tool/call') {
+      if (entry === undefined) {
+        process.push({ callId, name: event.data.name, arguments: event.data.arguments, result: null, error: null })
+      } else {
+        entry.name = event.data.name
+        entry.arguments = event.data.arguments
+      }
+    } else {
+      const outcome = contentText(event.data.message?.content)
+      const error = event.data.error === undefined ? null : `${event.data.error.name}: ${event.data.error.code}`
+      if (entry === undefined) {
+        process.push({ callId, name: '工具调用', arguments: null, result: outcome, error })
+      } else {
+        entry.result = outcome
+        entry.error = error
+      }
+    }
+    thread.updatedAt = at
   }
 
   thread({ title, parentId, dshSessionId, dshSessionTitle, position, color, now, order }) {
@@ -339,9 +390,11 @@ class InputError extends Error {}
 class NotFoundError extends Error {}
 
 function normalizeState(value) {
-  if ((value?.version === 2 || value?.version === 3) && Array.isArray(value.workspaces)) {
+  let migrated = false
+  let state
+  if ((value?.version === 2 || value?.version === 3 || value?.version === 4) && Array.isArray(value.workspaces)) {
     const hiddenSessionIds = Array.isArray(value.hiddenSessionIds) ? value.hiddenSessionIds.filter(item => typeof item === 'string') : []
-    let migrated = value.version !== 3 || !Array.isArray(value.hiddenSessionIds)
+    migrated = value.version !== 3 || !Array.isArray(value.hiddenSessionIds)
     const workspaces = value.workspaces.map(workspace => ({
       ...workspace,
       threads: Array.isArray(workspace.threads) ? workspace.threads.map(thread => {
@@ -356,29 +409,88 @@ function normalizeState(value) {
         return { ...rest, messages: notes }
       }) : [],
     }))
-    return { state: { ...value, version: 3, hiddenSessionIds, workspaces }, migrated }
+    state = { ...value, version: 3, hiddenSessionIds, workspaces }
+  } else if (value?.version === 1 && Array.isArray(value.workspaces)) {
+    const now = typeof value.updatedAt === 'string' ? value.updatedAt : new Date().toISOString()
+    state = {
+      version: 3,
+      hiddenSessionIds: [],
+      workspaces: value.workspaces.map((workspace, index) => {
+        const events = Array.isArray(workspace.events) ? workspace.events : []
+        const workspaceNow = typeof workspace.updatedAt === 'string' ? workspace.updatedAt : now
+        return {
+          id: typeof workspace.id === 'string' ? workspace.id : randomUUID(),
+          title: typeof workspace.title === 'string' && workspace.title.trim() ? workspace.title : '未命名工作空间',
+          createdAt: typeof workspace.createdAt === 'string' ? workspace.createdAt : workspaceNow,
+          updatedAt: workspaceNow,
+          threads: events.length === 0 ? [] : [{
+            id: randomUUID(), title: workspace.title || '历史记录', parentId: null, dshSessionId: null, dshSessionTitle: null,
+            color: TOPIC_COLORS[index % TOPIC_COLORS.length], position: { x: 86, y: 82 }, createdAt: workspaceNow, updatedAt: workspaceNow,
+            messages: events.map(event => ({ id: typeof event.id === 'string' ? event.id : randomUUID(), text: String(event.text ?? ''), at: typeof event.at === 'string' ? event.at : workspaceNow })),
+          }],
+        }
+      }),
+    }
+    migrated = true
+  } else {
+    throw new Error('expected Synapse data version 1, 2, 3, or 4')
   }
-  if (value?.version !== 1 || !Array.isArray(value.workspaces)) throw new Error('expected Synapse data version 1 or 2')
-  const state = {
-    version: 3,
-    hiddenSessionIds: [],
-    workspaces: value.workspaces.map((workspace, index) => {
-      const events = Array.isArray(workspace.events) ? workspace.events : []
-      const now = typeof workspace.updatedAt === 'string' ? workspace.updatedAt : new Date().toISOString()
-      return {
-        id: typeof workspace.id === 'string' ? workspace.id : randomUUID(),
-        title: typeof workspace.title === 'string' && workspace.title.trim() ? workspace.title : '未命名工作空间',
-        createdAt: typeof workspace.createdAt === 'string' ? workspace.createdAt : now,
-        updatedAt: now,
-        threads: events.length === 0 ? [] : [{
-          id: randomUUID(), title: workspace.title || '历史记录', parentId: null, dshSessionId: null, dshSessionTitle: null,
-          color: TOPIC_COLORS[index % TOPIC_COLORS.length], position: { x: 86, y: 82 }, createdAt: now, updatedAt: now,
-          messages: events.map(event => ({ id: typeof event.id === 'string' ? event.id : randomUUID(), text: String(event.text ?? ''), at: typeof event.at === 'string' ? event.at : now })),
-        }],
+  if (state.version !== 4) {
+    if (foldLegacyToolCards(state.workspaces)) migrated = true
+    state.version = 4
+  }
+  return { state, migrated }
+}
+
+/**
+ * Fold v3-era standalone tool cards (kinds `tool` / `tool-result`) into the
+ * preceding assistant message's `process` list, pairing each call with the
+ * result that follows it in order, so every tool invocation lives in one
+ * home: the assistant turn card.
+ */
+function foldLegacyToolCards(workspaces) {
+  let changed = false
+  for (const workspace of workspaces) {
+    for (const thread of workspace.threads ?? []) {
+      if (!Array.isArray(thread.messages)) continue
+      const folded = []
+      let assistant = null
+      let pending = []
+      for (const message of thread.messages) {
+        if (message.kind === 'assistant') {
+          assistant = message
+          assistant.process ??= []
+          pending = []
+          folded.push(message)
+          continue
+        }
+        if (message.kind !== 'tool' && message.kind !== 'tool-result') {
+          folded.push(message)
+          continue
+        }
+        if (assistant === null) {
+          folded.push(message)
+          continue
+        }
+        changed = true
+        if (message.kind === 'tool') {
+          const [name = '工具调用', ...argumentLines] = message.text.split('\n')
+          const entry = { callId: `legacy-${assistant.process.length}`, name, arguments: argumentLines.join('\n'), result: null, error: null }
+          pending.push(entry)
+          assistant.process.push(entry)
+        } else {
+          const entry = pending.shift() ?? (() => {
+            const orphan = { callId: `legacy-orphan-${assistant.process.length}`, name: '工具调用', arguments: null, result: null, error: null }
+            assistant.process.push(orphan)
+            return orphan
+          })()
+          entry.result = message.text
+        }
       }
-    }),
+      thread.messages = folded
+    }
   }
-  return { state, migrated: true }
+  return changed
 }
 
 function positionOf(value) {
@@ -404,13 +516,6 @@ function projectableEvent(event) {
     }
     case 'assistant/message':
       return noteProjection('assistant', contentText(event.data.message.content))
-    case 'tool/call':
-      return noteProjection('tool', `${event.data.name}\n${event.data.arguments}`)
-    case 'tool/result': {
-      const outcome = contentText(event.data.message.content)
-      const error = event.data.error === undefined ? '' : `\n${event.data.error.name}: ${event.data.error.code}`
-      return noteProjection(event.data.error === undefined ? 'tool-result' : 'error', `${outcome}${error}`)
-    }
     case 'todo/write':
       return noteProjection('todo', event.data.todos.map(todo => `[${todo.status}] ${todo.content}`).join('\n'))
     case 'turn/end':

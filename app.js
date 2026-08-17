@@ -486,8 +486,24 @@ function threadMessage(thread, message) {
   const collapsible = isProcessMessage(message)
   const expanded = state.expandedMessageIds.has(messageId)
   const fold = collapsible ? `<button class="message-fold" data-action="toggle-message" data-message="${escapeHtml(messageId)}" aria-label="${expanded ? '收起过程记录' : '展开过程记录'}" title="${expanded ? '收起' : '展开'}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3.5 4.5 4.5L6 12.5"/></svg></button>` : ''
-  const body = message.pending && message.text === '' ? '<p>正在回复</p>' : `${collapsible && !expanded ? `<p class="message-summary">${escapeHtml(processSummary(message.text))}</p>` : renderMarkdown(message.text)}${message.pending ? '<p class="message-streaming">正在回复</p>' : ''}`
+  const process = Array.isArray(message.process) && message.process.length > 0 ? message.process : null
+  const body = message.pending && message.text === '' ? '<p>正在回复</p>'
+    : `${collapsible && !expanded ? `<p class="message-summary">${escapeHtml(processSummary(message.text))}</p>` : renderMarkdown(message.text)}${message.pending ? '<p class="message-streaming">正在回复</p>' : ''}${process === null ? '' : processRecords(process, messageId)}`
   return `<article class="message message-${message.kind}${message.pending ? ' message-pending' : ''}${collapsible ? ' message-collapsible' : ''}${expanded ? ' expanded' : ''}"><header><span>${label}</span><time>${formatTime(message.at)}</time>${branch}${fold}</header>${body}</article>`
+}
+
+function processRecords(process, messageId) {
+  const key = `${messageId}:process`
+  const expanded = state.expandedMessageIds.has(key)
+  const entries = process.map((entry, index) => {
+    const entryKey = `${key}:${index}`
+    const entryExpanded = state.expandedMessageIds.has(entryKey)
+    const status = entry.error !== null ? '失败' : entry.result === null ? '等待结果' : '完成'
+    const argumentsHtml = entry.arguments === null || entry.arguments === '' ? '' : `<pre class="process-args">${escapeHtml(entry.arguments)}</pre>`
+    const outcomeHtml = entry.error !== null ? `<pre class="process-error">${escapeHtml(entry.error)}</pre>` : entry.result === null ? '' : `<pre class="process-result">${escapeHtml(entry.result)}</pre>`
+    return `<div class="process-entry${entryExpanded ? ' expanded' : ''}"><button class="process-entry-fold" data-action="toggle-message" data-message="${escapeHtml(entryKey)}"><span class="process-entry-name">${escapeHtml(entry.name)}</span><span class="process-status${entry.error !== null ? ' process-status-error' : entry.result === null ? ' process-status-pending' : ' process-status-done'}">${status}</span></button>${entryExpanded ? `<div class="process-entry-body">${argumentsHtml}${outcomeHtml}</div>` : ''}</div>`
+  }).join('')
+  return `<section class="process-records${expanded ? ' expanded' : ''}"><button class="process-records-fold" data-action="toggle-message" data-message="${escapeHtml(key)}"><span>${expanded ? '收起过程记录' : '过程记录'}</span><span class="process-count">${process.length}</span></button>${expanded ? entries : ''}</section>`
 }
 
 function renderThread() {

@@ -155,6 +155,21 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .message-tool, .message-tool-result { border-left: 3px solid #6b7280; }
 .message-error { border-left: 3px solid #111827; }
 .message-pending { padding: 10px 14px; border: 1px dashed #9ca3af; border-radius: 6px; color: #374151; font-size: 12px; }
+.process-records { margin-top: 10px; border-top: 1px dashed #e2e8f0; padding-top: 8px; }
+.process-records-fold { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px; border: 0; border-radius: 6px; background: #f8fafc; padding: 7px 10px; color: #475569; font-size: 12px; font-weight: 620; text-align: left; }
+.process-records-fold:hover { background: #edf3ff; color: #3478f6; }
+.process-count { display: grid; min-width: 20px; height: 20px; place-items: center; border-radius: 10px; background: #e2e8f0; color: #64748b; font-size: 11px; font-weight: 720; }
+.process-entry { margin-top: 8px; border: 1px solid #e2e8f0; border-radius: 6px; background: #fff; }
+.process-entry-fold { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px; border: 0; background: transparent; padding: 8px 10px; color: #334155; font-size: 12px; text-align: left; }
+.process-entry-fold:hover { background: #f8fafc; }
+.process-entry-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.process-status { flex: none; font-size: 11px; }
+.process-status-done { color: #0f766e; }
+.process-status-pending { color: #b45309; }
+.process-status-error { color: #b91c1c; }
+.process-entry-body { display: grid; gap: 8px; padding: 0 10px 10px; }
+.process-args, .process-result, .process-error { margin: 0; padding: 8px 10px; border-radius: 5px; background: #f1f5f9; overflow: auto; color: #334155; font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
+.process-error { background: #fef2f2; color: #991b1b; }
 .message-composer { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; padding: 10px; border: 1px solid #dbe3eb; border-radius: 7px; background: #fff; }
 .message-composer textarea { min-height: 72px; resize: vertical; border: 0; outline: 0; color: #334155; }
 .compare-view { height: 100%; overflow: auto; padding: 43px 38px; }
