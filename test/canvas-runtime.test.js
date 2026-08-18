@@ -75,3 +75,12 @@ test('switching the workspace in the map syncs DSH to its first session', async 
   assert.match(select, /choice\.sessionIds\[0\]/)
   assert.match(select, /post\('synapse:activate-session'/)
 })
+
+test('renders markdown tables and allows higher canvas zoom', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const markdown = source.slice(source.indexOf('function markdownBlock'), source.indexOf('function overlapsCard'))
+
+  assert.match(markdown, /<table><thead>/)
+  assert.match(markdown, /isTableDelimiter/)
+  assert.match(source, /Math\.min\(4,/)
+})

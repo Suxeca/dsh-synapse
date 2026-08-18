@@ -368,6 +368,13 @@ function inlineMarkdown(text) {
     .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
 }
 
+const tableCells = line => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim())
+
+const isTableDelimiter = line => {
+  const cells = tableCells(line)
+  return cells.length > 0 && cells.every(cell => /^:?-+:?$/.test(cell))
+}
+
 function markdownBlock(text) {
   const lines = text.split('\n')
   const output = []
@@ -393,6 +400,19 @@ function markdownBlock(text) {
         index++
       }
       output.push(`<${unordered === null ? 'ol' : 'ul'}>${items.join('')}</${unordered === null ? 'ol' : 'ul'}>`)
+      continue
+    }
+    // GFM table: a leading-pipe header row followed by a |-delimiter row,
+    // then any number of leading-pipe body rows.
+    if (/^\s*\|/.test(line) && index + 1 < lines.length && isTableDelimiter(lines[index + 1])) {
+      const header = line
+      const body = []
+      index += 2
+      while (index < lines.length && /^\s*\|.*\|\s*$/.test(lines[index])) {
+        body.push(lines[index])
+        index++
+      }
+      output.push(`<table><thead><tr>${tableCells(header).map(cell => `<th>${inlineMarkdown(cell)}</th>`).join('')}</tr></thead><tbody>${body.map(row => `<tr>${tableCells(row).map(cell => `<td>${inlineMarkdown(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table>`)
       continue
     }
     const paragraph = []
@@ -816,7 +836,7 @@ function canvasViewport(target) {
 }
 
 function zoomCanvas(viewport, nextZoom, clientX, clientY) {
-  const zoom = Math.min(1.4, Math.max(.6, Math.round(nextZoom * 100) / 100))
+  const zoom = Math.min(4, Math.max(.6, Math.round(nextZoom * 100) / 100))
   if (zoom === state.zoom) return
   const bounds = viewport.getBoundingClientRect()
   const localX = clientX - bounds.left
