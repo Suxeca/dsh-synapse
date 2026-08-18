@@ -33,7 +33,7 @@
 | 📥 | 持续投影 | 用户消息和助手回复投影到对应卡片；流式回复在详情中持续更新 |
 | 🔧 | 工具过程折叠 | 工具调用与结果按 `callId` 配对，折叠进对应助手回复卡，不再单独成卡 |
 | ⚡ | 会话同步 | 原生对话与会话地图双向同步当前会话——任一侧切换，另一侧跟随高亮 |
-| 🎨 | 画布交互 | 拖动画布、缩放视图（最高 4×）、移动卡片，卡片内平滑滚动 |
+| 🎨 | 画布交互 | 拖动画布、缩放视图（最高 4×）、移动卡片（位置自动保存）、一键定位当前会话，卡片内平滑滚动 |
 | 🔒 | 原生会话不变 | 打开、追问、创建和归档仍由 DSH 会话系统完成；Synapse 只提供另一种查看与组织方式 |
 
 ![Native dialogue and Synapse toggle](docs/images/native-webui.png)
@@ -49,7 +49,7 @@ corepack pnpm dsh web
 
 ### 安装
 
-前提：已安装并可运行 DeepSeek Harness，且 Node.js 版本不低于 `22.19`。
+前提：已安装支持 `dsh plugin` profile 插件机制的 DeepSeek Harness（2026-08 及之后版本），且 Node.js 版本不低于 `22.19`。
 
 > [!NOTE]
 > 本插件**仅支持 `web` profile**：它的 patch 只向 Web 组合插入自身，复用 DSH 现有 Web 服务，不启动第二个应用进程。
@@ -107,6 +107,7 @@ corepack pnpm dsh plugin --profile web remove dsh-synapse
 | `dataFile` | `$DSH_HOME/synapse/workspaces.json` | 画布元数据持久化路径 |
 | `autoProjection` | `true` | 是否自动把已提交的 DSH 会话事件投影为画布卡片 |
 | `projectionWorkspaceTitle` | `DSH 任务` | 投影工作区的标题 |
+| `trustedHosts` | `[]` | 额外放行的 Host（主机名或 主机:端口）；`localhost` 与 `127.0.0.1` 始终放行。局域网访问需在此加入你的主机 |
 
 ```yaml
 # 在 profile 的 cordis.patch.yml 中覆盖（需重述全部键）
@@ -138,9 +139,8 @@ corepack pnpm dsh plugin --profile web remove dsh-synapse
 
 - 仅支持 `web` profile。
 - 画布元数据与会话日志分离：删除 `workspaces.json` 会丢失画布布局与分支锚点，但不会丢失会话。
-- 两个 `dsh web` 实例共享同一 profile 时会写同一个 `workspaces.json`，存在最后写入覆盖风险——请只运行单个实例。
+- 两个 `dsh web` 实例共享同一 profile 时会写同一个 `workspaces.json`：运行时已加跨进程写锁与外部修改警告，但最后写入覆盖的风险仍在——请只运行单个实例。
 - 旧版（v3）数据迁移时工具卡片按**顺序**配对（每条调用配下一条结果）；实时事件按 `callId` 配对。
-- 从地图下拉切换工作区时，同步的是该工作区**第一个**会话，而非最新会话。
 
 ---
 
@@ -160,7 +160,7 @@ Complex work is rarely linear. You may need to preserve one approach, return to 
 | 📥 | Live projection | Project user messages and assistant replies into cards, with streaming updates in the detail view |
 | 🔧 | Folded tool process | Tool calls and results pair by `callId` and fold into the assistant reply card instead of becoming standalone cards |
 | ⚡ | Session sync | The native chat and the session map sync the current session bidirectionally — switching on either side highlights the other |
-| 🎨 | Canvas interaction | Pan, zoom (up to 4×), move cards, and scroll long replies smoothly inside each card |
+| 🎨 | Canvas interaction | Pan, zoom (up to 4×), move cards (positions persist), one-click focus on the current session, and smooth scrolling inside each card |
 | 🔒 | Native sessions stay native | Opening, prompting, creating, and archiving sessions remains DSH-owned; Synapse only changes how they are viewed and organized |
 
 ### Quick start
@@ -174,7 +174,7 @@ Open `http://127.0.0.1:3080/` and use the top "Session Map" switch.
 
 ### Installation
 
-Prerequisites: a working DeepSeek Harness installation and Node.js `>= 22.19`.
+Prerequisites: a DeepSeek Harness with the `dsh plugin` profile plugin mechanism (2026-08 or later) and Node.js `>= 22.19`.
 
 > [!NOTE]
 > This plugin **only supports the `web` profile**: its patch inserts into the Web composition and reuses the existing DSH server rather than running a second application process.
@@ -232,6 +232,7 @@ The plugin is injected through the profile's `cordis.patch.yml`. Override any ke
 | `dataFile` | `$DSH_HOME/synapse/workspaces.json` | Canvas metadata persistence path |
 | `autoProjection` | `true` | Automatically project committed DSH session events into canvas cards |
 | `projectionWorkspaceTitle` | `DSH 任务` | Title of the projection workspace |
+| `trustedHosts` | `[]` | Extra authorities (host or host:port) the `/synapse` Host check accepts; `localhost` and `127.0.0.1` are always allowed. LAN access must add your host here |
 
 ```yaml
 # Override in the profile's cordis.patch.yml (restate every key)
@@ -284,6 +285,5 @@ Does not invalidate. The plugin never changes request headers, system prompts, o
 
 - Only the `web` profile is supported; the patch inserts into the web composition and no other profile template declares it.
 - Canvas metadata is separate from session logs: deleting `workspaces.json` loses canvas layout and fork anchors, never conversations.
-- Two `dsh web` instances sharing one profile write the same `workspaces.json`; run a single instance to avoid last-writer-wins clobbering of canvas state.
+- Two `dsh web` instances sharing one profile write the same `workspaces.json`: a cross-process write lock and external-modification warnings are in place, but last-writer-wins clobbering remains possible — run a single instance.
 - Legacy v3 data migrates tool cards by order (each call paired with the next result); live events pair by `callId`.
-- Selecting a workspace from the map dropdown syncs DSH to that workspace's first session, not necessarily its most recent one.

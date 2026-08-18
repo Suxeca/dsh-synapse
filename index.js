@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 
@@ -9,6 +9,7 @@ const MAX_BODY_BYTES = 32 * 1024
 const MAX_TITLE_LENGTH = 120
 const MAX_NOTE_LENGTH = 4_000
 const TOPIC_COLORS = ['#0f766e', '#2563eb', '#be123c', '#7c3aed', '#b45309']
+const LOCK_STALE_MS = 60_000
 
 /** JSON persistence for the Synapse workspace graph. */
 export class WorkspaceStore {
@@ -18,6 +19,9 @@ export class WorkspaceStore {
     this.state = undefined
     this.serial = Promise.resolve()
     this.ready = this.load()
+    this.lastKnownMtime = null
+    this.externalModWarned = false
+    this.lockWarned = false
   }
 
   async list() {
@@ -204,6 +208,18 @@ export class WorkspaceStore {
     })
   }
 
+  /** Project a batch of committed events for one session in a single write. */
+  async projectEvents(session, events, workspaceTitle = 'DSH 任务') {
+    if (events.length === 0) return null
+    return this.mutate(() => {
+      if (this.state.hiddenSessionIds.includes(session.id)) return null
+      const workspace = this.dshWorkspace(sessionCwd(session), workspaceTitle)
+      const thread = this.dshThread(workspace, session)
+      for (const event of events) this.projectEventInto(workspace, thread, event)
+      return structuredClone(thread)
+    })
+  }
+
   async load() {
     await mkdir(dirname(this.dataFile), { recursive: true })
     try {
@@ -230,9 +246,77 @@ export class WorkspaceStore {
   }
 
   async save() {
-    const temporaryFile = `${this.dataFile}.${process.pid}.tmp`
-    await writeFile(temporaryFile, `${JSON.stringify(this.state, null, 2)}\n`, 'utf8')
-    await rename(temporaryFile, this.dataFile)
+    // Two dsh web instances sharing one profile clobber each other's canvas
+    // state. Warn loudly instead of silently losing work; a live lock held by
+    // another process or a file mtime that moved since our last write both
+    // indicate a second writer.
+    const before = await this.fileMtime()
+    if (this.lastKnownMtime !== null && before !== null && before !== this.lastKnownMtime) {
+      this.lastKnownMtime = before
+      if (!this.externalModWarned) {
+        this.externalModWarned = true
+        process.stderr.write('synapse: workspaces.json 已被另一个 dsh web 实例修改，本实例的写入可能覆盖其更改——请只运行一个实例\n')
+      }
+    }
+    await this.acquireLock()
+    try {
+      const temporaryFile = `${this.dataFile}.${process.pid}.tmp`
+      await writeFile(temporaryFile, `${JSON.stringify(this.state, null, 2)}\n`, 'utf8')
+      await rename(temporaryFile, this.dataFile)
+      this.lastKnownMtime = (await stat(this.dataFile)).mtimeMs
+    } finally {
+      await this.releaseLock()
+    }
+  }
+
+  async fileMtime() {
+    try { return (await stat(this.dataFile)).mtimeMs } catch { return null }
+  }
+
+  /** Take an exclusive cross-process lock, breaking a stale one; warn when a live process holds it. */
+  async acquireLock() {
+    const lockFile = `${this.dataFile}.lock`
+    if (await this.tryAcquire(lockFile)) return
+    if (await this.lockIsStale(lockFile)) {
+      await unlink(lockFile).catch(() => {})
+      if (await this.tryAcquire(lockFile)) return
+    }
+    if (!this.lockWarned) {
+      this.lockWarned = true
+      process.stderr.write('synapse: 另一个 dsh web 实例正在写入 workspaces.json——请只运行一个实例，否则画布数据可能互相覆盖\n')
+    }
+  }
+
+  async tryAcquire(lockFile) {
+    try {
+      await writeFile(lockFile, `${process.pid}\n`, { flag: 'wx' })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /** A lock is stale when its owner PID is gone or the lock file is older than the stale window. */
+  async lockIsStale(lockFile) {
+    try {
+      const [content, stats] = await Promise.all([readFile(lockFile, 'utf8'), stat(lockFile)])
+      const tooOld = Date.now() - stats.mtimeMs > LOCK_STALE_MS
+      const pid = Number.parseInt(content, 10)
+      if (!Number.isInteger(pid)) return tooOld
+      if (pid === process.pid) return false
+      try {
+        process.kill(pid, 0)
+        return tooOld
+      } catch {
+        return true
+      }
+    } catch {
+      return false
+    }
+  }
+
+  async releaseLock() {
+    await unlink(`${this.dataFile}.lock`).catch(() => {})
   }
 
   workspace(workspaceId) {
@@ -614,16 +698,42 @@ export function apply(ctx, config) {
     const replayFrom = session.header?.parentSession === undefined ? 0 : session.firstLiveSeq
     void store.projectSession(session, replayFrom, projectionWorkspaceTitle).catch(reportProjectionFailure)
   }
-  const projectEvent = (session, event) => {
-    void store.projectEvent(session, event, projectionWorkspaceTitle).catch(reportProjectionFailure)
+  // Buffer live events per session and flush them in one write per microtask,
+  // so a burst of turn events coalesces into a single save instead of N.
+  const projectionQueue = []
+  let projectionScheduled = false
+  const enqueueProjection = (session, event) => {
+    projectionQueue.push({ session, event })
+    if (projectionScheduled) return
+    projectionScheduled = true
+    queueMicrotask(() => {
+      projectionScheduled = false
+      const batch = projectionQueue.splice(0)
+      const bySession = new Map()
+      for (const item of batch) {
+        const entry = bySession.get(item.session.id)
+        if (entry === undefined) bySession.set(item.session.id, [item.session, [item.event]])
+        else entry[1].push(item.event)
+      }
+      for (const [sessionId, [session, events]] of bySession) {
+        void store.projectEvents(session, events, projectionWorkspaceTitle).catch(reportProjectionFailure)
+      }
+    })
   }
   if (autoProjection) {
     ctx.on('session/created', replaySession)
-    ctx.on('session/event', projectEvent)
+    ctx.on('session/event', enqueueProjection)
     for (const session of ctx.sessions.list()) replaySession(session)
   }
+  // The DSH /api browser-trust fence does not cover /synapse routes, so this
+  // handler checks the Host header itself: localhost is allowed by default and
+  // additional authorities opt in through config.trustedHosts (mirrors the
+  // fence's DNS-rebinding defense).
+  const trustedHosts = new Set(['localhost', '127.0.0.1', ...[...(config?.trustedHosts ?? [])].map(host => String(host).trim().toLowerCase()).filter(Boolean)])
   const api = async (req, res) => {
     try {
+      const hostname = (typeof req.headers.host === 'string' ? req.headers.host : '').replace(/:\d+$/, '').toLowerCase()
+      if (!trustedHosts.has(hostname)) return sendJson(res, 403, { error: '不被信任的 Host' })
       const path = new URL(req.url ?? '/', 'http://dsh.local').pathname
       if (path === '/synapse/api/reset' && req.method === 'POST') return sendJson(res, 200, await store.clearLegacy(ctx.sessions.list()))
       if (path === '/synapse/api/workspaces') {

@@ -52,6 +52,29 @@ test('projects committed DSH events once, folds tool process into the assistant 
   assert.equal(childThread.parentId, parentThread.id)
 })
 
+test('projects a batch of session events in a single write', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-synapse-batch-'))
+  const store = new WorkspaceStore(join(directory, 'state.json'))
+  const session = {
+    id: 'session-batch', header: { meta: { cwd: 'C:\\work\\batch' } }, firstLiveSeq: 0,
+    events: [
+      { type: 'user/message', seq: 0, time: 1, data: { content: [{ type: 'text', text: '批量问题' }] } },
+      { type: 'assistant/message', seq: 1, time: 2, data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: '批量回答' }] } } },
+      { type: 'tool/call', seq: 2, time: 3, data: { turn: 1, step: 1, callId: 'c1', name: 'bash', arguments: '{}' } },
+      { type: 'tool/result', seq: 3, time: 4, data: { turn: 1, step: 1, message: { source: { kind: 'tool', callId: 'c1' }, content: [{ type: 'text', text: 'ok' }] } } },
+    ],
+  }
+  await store.projectEvents(session, session.events)
+  const [workspace] = await store.list()
+  const graph = await store.get(workspace.id)
+  const thread = graph.threads[0]
+  assert.equal(thread.messages.length, 2)
+  assert.equal(thread.messages[0].text, '批量问题')
+  assert.equal(thread.messages[1].process.length, 1)
+  assert.equal(thread.messages[1].process[0].result, 'ok')
+  assert.match(await readFile(join(directory, 'state.json'), 'utf8'), /"version": 4/)
+})
+
 test('migrates v3 tool cards into the assistant process records', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-synapse-migrate-'))
   const dataFile = join(directory, 'state.json')

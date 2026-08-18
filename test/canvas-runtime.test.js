@@ -95,3 +95,19 @@ test('renders the refactored detail view with role-based messages', async () => 
   assert.match(message, /message-avatar/)
   assert.match(message, /message-body/)
 })
+
+test('persists dragged card positions and can focus the current session', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+
+  assert.match(source, /localStorage\.setItem\(CARD_POSITIONS_KEY/)
+  assert.match(source, /function focusActiveCard\(\)/)
+  assert.match(source, /data-action="focus-active"/)
+})
+
+test('switching workspaces syncs DSH to the most recently updated session', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const select = source.slice(source.indexOf("app.addEventListener('change'"), source.indexOf("app.addEventListener('input'"))
+
+  assert.match(select, /updatedAt/)
+  assert.match(select, /post\('synapse:activate-session'/)
+})
