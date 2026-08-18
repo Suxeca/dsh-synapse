@@ -142,6 +142,13 @@ window.__ModuleLoader__.load({
           try { ctx.sessions.open(event.data.sessionId); close() } catch { send('synapse:bridge-error', { message: '关联的 DSH 会话已不可用' }) }
           return
         }
+        if (event.data.type === 'synapse:activate-session') {
+          // Bidirectional current-session sync: switch DSH's current session
+          // without closing the map; the sessions-list subscription re-sends
+          // synapse:current-session so the map follows the new highlight.
+          try { ctx.sessions.open(event.data.sessionId) } catch { send('synapse:bridge-error', { message: '关联的 DSH 会话已不可用' }) }
+          return
+        }
         if (event.data.type === 'synapse:fork-session') {
           const atSeq = Number.isInteger(event.data.atSeq) ? event.data.atSeq : undefined
           ctx.sessions.fork({ sessionId: event.data.sessionId, atSeq, increaseTitle: true }).then(id => {

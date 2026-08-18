@@ -21,6 +21,7 @@
 - **工作区映射**：读取 DSH 工作区与目录归属，便于在正确的项目上下文中创建会话。
 - **持续投影**：用户消息和助手回复会投影到对应卡片；流式回复可在详情中持续更新。
 - **工具过程折叠**：工具调用与结果按 callId 配对后，折叠进对应助手回复卡，不再单独成卡。
+- **会话同步**：原生对话与会话地图双向同步当前会话——任一侧切换，另一侧跟随高亮。
 - **画布交互**：拖动画布、缩放视图、移动卡片，并在卡片内部滚动长回复。
 - **原生会话不变**：打开、追问、创建和归档仍由 DSH 会话系统完成；Synapse 只提供另一种查看与组织方式。
 
@@ -91,6 +92,7 @@ Complex work is rarely linear. You may need to preserve one approach, return to 
 - **Workspace-aware**: Reflect DSH workspaces and directory ownership when creating or browsing sessions.
 - **Live projection**: Project user messages and assistant replies into cards, including streaming reply updates in the detail view.
 - **Folded tool process**: Tool calls and results pair by `callId` and fold into the assistant reply card instead of becoming standalone cards.
+- **Session sync**: The native chat and the session map sync the current session bidirectionally — switching on either side highlights the other.
 - **Canvas interaction**: Pan, zoom, move cards, and scroll long replies inside each card.
 - **Native sessions stay native**: Opening, prompting, creating, and archiving sessions remains DSH-owned; Synapse only changes how they are viewed and organized.
 

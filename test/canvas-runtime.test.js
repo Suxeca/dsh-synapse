@@ -45,3 +45,18 @@ test('preserves each card answer scroll across canvas re-renders', async () => {
   assert.match(render, /cardScrollTops/)
   assert.match(render, /\.thread-answer`\)\s*if \(answer instanceof HTMLElement\) answer\.scrollTop = scrollTop/)
 })
+
+test('activating a session from the map syncs DSH without closing the map', async () => {
+  const source = await readFile(new URL('../client.js', import.meta.url), 'utf8')
+  const activate = source.slice(source.indexOf("'synapse:activate-session'"), source.indexOf("'synapse:fork-session'"))
+
+  assert.match(activate, /ctx\.sessions\.open\(event\.data\.sessionId\)/)
+  assert.doesNotMatch(activate, /close\(\)/)
+})
+
+test('selecting a session in the sidebar syncs the DSH current session', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const selectThread = source.slice(source.indexOf("button.dataset.action === 'select-thread'"), source.indexOf("button.dataset.action === 'show-thread'"))
+
+  assert.match(selectThread, /synapse:activate-session/)
+})

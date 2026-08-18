@@ -906,7 +906,15 @@ app.addEventListener('click', async event => {
     if (button.dataset.action === 'toggle-sidebar') { state.sidebarCollapsed = !state.sidebarCollapsed; render() }
     if (button.dataset.action === 'create-session') openNewSession()
     if (button.dataset.action === 'open-current' && state.currentDsh !== null) post('synapse:open-session', { sessionId: state.currentDsh.id })
-    if (button.dataset.action === 'select-thread' && thread !== undefined) { state.activeId = thread.id; state.error = ''; render(); void loadThreadHistory(thread) }
+    if (button.dataset.action === 'select-thread' && thread !== undefined) {
+      state.activeId = thread.id
+      state.error = ''
+      render()
+      void loadThreadHistory(thread)
+      // Bidirectional current-session sync: switch DSH's current session
+      // without closing the map; the client confirms via synapse:current-session.
+      if (thread.dshSessionId !== null) post('synapse:activate-session', { sessionId: thread.dshSessionId })
+    }
     if (button.dataset.action === 'show-thread' && thread !== undefined) { state.activeId = thread.id; state.mode = 'thread'; render(); void loadThreadHistory(thread) }
     if (button.dataset.action === 'show-canvas') { state.mode = 'canvas'; render() }
     if (button.dataset.action === 'open-continue' && thread !== undefined) openContinue(thread, button.dataset.card)
