@@ -67,3 +67,11 @@ test('clicking a session card syncs the DSH current session', async () => {
 
   assert.match(cardClick, /thread\.dshSessionId !== null\) post\('synapse:activate-session'/)
 })
+
+test('switching the workspace in the map syncs DSH to its first session', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const select = source.slice(source.indexOf("app.addEventListener('change'"), source.indexOf("app.addEventListener('input'"))
+
+  assert.match(select, /choice\.sessionIds\[0\]/)
+  assert.match(select, /post\('synapse:activate-session'/)
+})

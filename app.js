@@ -945,8 +945,13 @@ app.addEventListener('change', event => {
   const select = event.target.closest('[data-action="select-workspace"]')
   if (!(select instanceof HTMLSelectElement)) return
   const choice = workspaceChoices().find(item => item.id === select.value)
-  if (choice?.source === 'dsh') void openDshWorkspace(choice.id).catch(setError)
-  else if (choice !== undefined) { state.selectedDshWorkspaceId = null; void openWorkspace(choice.id).catch(setError) }
+  if (choice?.source === 'dsh') {
+    void openDshWorkspace(choice.id).catch(setError)
+    // Map → native sync: switching workspaces moves DSH's current session
+    // to the workspace's first session, keeping both sides in step.
+    const sessionId = choice.sessionIds[0]
+    if (sessionId !== undefined) post('synapse:activate-session', { sessionId })
+  } else if (choice !== undefined) { state.selectedDshWorkspaceId = null; void openWorkspace(choice.id).catch(setError) }
 })
 app.addEventListener('input', event => { const input = event.target; if (input instanceof HTMLTextAreaElement && input.closest('[data-draft]') && state.draft !== null) state.draft.text = input.value })
 app.addEventListener('submit', event => {
