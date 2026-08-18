@@ -739,6 +739,13 @@ function renderThread() {
 function render() {
   const detail = state.mode === 'thread' ? document.querySelector('.detail-view') : null
   const detailScrollTop = detail instanceof HTMLElement ? detail.scrollTop : null
+  const cardScrollTops = new Map()
+  if (state.mode === 'canvas') {
+    for (const answer of document.querySelectorAll('.thread-card[data-thread] .thread-answer')) {
+      const card = answer.closest('.thread-card')
+      if (card instanceof HTMLElement && typeof card.dataset.thread === 'string') cardScrollTops.set(card.dataset.thread, answer.scrollTop)
+    }
+  }
   const workspace = state.workspace
   const threads = workspace?.threads ?? []
   const view = state.mode === 'thread' ? renderThread() : renderCanvas()
@@ -749,6 +756,10 @@ function render() {
   const canvasTabs = `<nav class="canvas-tabs" aria-label="会话地图视图"><button class="${state.mode === 'canvas' ? 'active' : ''}" data-action="show-canvas">地图</button><button class="${state.mode === 'thread' ? 'active' : ''}" data-action="show-thread" data-thread="${state.activeId ?? ''}" ${detailAvailable ? '' : 'disabled'}>详情</button></nav>`
   app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><label class="workspace-label"><span>工作区</span><span class="workspace-select"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2.5 4.75h3l1.2 1.5h6.8v5.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"/></svg><select data-action="select-workspace" aria-label="选择工作区" ${state.draft !== null ? 'disabled' : ''}>${choices.map(item => `<option value="${item.id}" title="${escapeHtml(item.path ?? item.title)}" ${item.id === selectedWorkspaceId ? 'selected' : ''}>${escapeHtml(item.title)}</option>`).join('')}</select></span></label><div class="sidebar-heading"><span>会话</span></div><nav class="thread-tree">${threads.map(thread => `<button class="tree-row ${thread.id === state.activeId ? 'active' : ''}" data-action="select-thread" data-thread="${thread.id}" style="--thread-color:#374151"><span class="tree-dot"></span><span>${escapeHtml(threadListTitle(thread))}</span>${thread.parentId === null ? '' : '<i>分支</i>'}</button>`).join('') || '<p class="tree-empty">暂未同步会话</p>'}</nav></aside><header class="topbar"><div class="view-switch" role="group" aria-label="视图切换"><button data-action="close" type="button" aria-pressed="false">对话</button><button class="active" type="button" aria-pressed="true">会话地图</button></div>${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message">${escapeHtml(state.error)}</div>` : ''}${canvasTabs}${view}</section></main>`
   installDragging()
+  for (const [threadId, scrollTop] of cardScrollTops) {
+    const answer = app.querySelector(`.thread-card[data-thread="${CSS.escape(threadId)}"] .thread-answer`)
+    if (answer instanceof HTMLElement) answer.scrollTop = scrollTop
+  }
   if (detailScrollTop !== null) window.requestAnimationFrame(() => {
     const nextDetail = document.querySelector('.detail-view')
     if (nextDetail instanceof HTMLElement) nextDetail.scrollTop = detailScrollTop
@@ -859,12 +870,17 @@ app.addEventListener('wheel', event => {
   if (!(viewport instanceof HTMLElement)) return
   const card = event.target instanceof Element ? event.target.closest('.thread-card') : null
   if (card instanceof HTMLElement) {
+    // Over a card the wheel scrolls that card's own answer with the browser's
+    // native wheel (OS-smooth, never a page jump per notch); the answer's
+    // overscroll-behavior: contain stops the scroll chaining into the canvas.
     const answer = card.querySelector('.thread-answer')
-    if (answer instanceof HTMLElement) {
-      event.preventDefault()
-      answer.scrollTop += event.deltaY
+    if (answer instanceof HTMLElement && answer.scrollHeight > answer.clientHeight) {
       deferCanvasRefresh()
+      return
     }
+    // A card with no scrollable answer swallows the wheel instead of zooming.
+    event.preventDefault()
+    deferCanvasRefresh()
     return
   }
   event.preventDefault()

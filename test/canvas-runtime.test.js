@@ -29,3 +29,19 @@ test('recenters the canvas whenever the map view is reopened', async () => {
   assert.match(mapOpened, /resetCanvasCamera\(\)/)
   assert.match(mapOpened, /state\.mode = 'canvas'\s+render\(\)/)
 })
+
+test('lets the card answer scroll with the native wheel instead of adding deltaY', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const wheel = source.slice(source.indexOf("app.addEventListener('wheel'"), source.indexOf("app.addEventListener('click'"))
+
+  assert.match(wheel, /native wheel/)
+  assert.doesNotMatch(wheel, /scrollTop\s*\+=/)
+})
+
+test('preserves each card answer scroll across canvas re-renders', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const render = source.slice(source.indexOf('function render() {'), source.indexOf('function renderPreservingDetailScroll'))
+
+  assert.match(render, /cardScrollTops/)
+  assert.match(render, /\.thread-answer`\)\s*if \(answer instanceof HTMLElement\) answer\.scrollTop = scrollTop/)
+})
