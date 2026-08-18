@@ -720,18 +720,20 @@ function processSummary(text) {
 }
 
 function threadMessage(thread, message) {
-  const label = message.kind === 'user' ? '你' : 'DSH'
+  const isUser = message.kind === 'user'
+  const label = isUser ? '你' : message.kind === 'assistant' ? 'DSH' : message.kind === 'error' ? '错误' : '记录'
   const branch = message.kind === 'assistant' && Number.isInteger(message.sourceSeq)
-    ? `<button data-action="open-branch" data-thread="${thread.id}" data-seq="${message.sourceSeq}">从此回答分支</button>`
+    ? `<button class="message-branch" data-action="open-branch" data-thread="${thread.id}" data-seq="${message.sourceSeq}" title="从此回答创建分支"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M4.5 3v6a2.5 2.5 0 0 0 2.5 2.5H12"/><circle cx="4.5" cy="3" r="1.5"/><circle cx="11.5" cy="12" r="1.5"/></svg>分支</button>`
     : ''
   const messageId = `${thread.id}:${message.sourceSeq ?? `${message.kind}:${message.at}`}`
   const collapsible = isProcessMessage(message)
   const expanded = state.expandedMessageIds.has(messageId)
   const fold = collapsible ? `<button class="message-fold" data-action="toggle-message" data-message="${escapeHtml(messageId)}" aria-label="${expanded ? '收起过程记录' : '展开过程记录'}" title="${expanded ? '收起' : '展开'}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3.5 4.5 4.5L6 12.5"/></svg></button>` : ''
   const process = Array.isArray(message.process) && message.process.length > 0 ? message.process : null
-  const body = message.pending && message.text === '' ? '<p>正在回复</p>'
-    : `${collapsible && !expanded ? `<p class="message-summary">${escapeHtml(processSummary(message.text))}</p>` : renderMarkdown(message.text)}${message.pending ? '<p class="message-streaming">正在回复</p>' : ''}${process === null ? '' : processRecords(process, messageId)}`
-  return `<article class="message message-${message.kind}${message.pending ? ' message-pending' : ''}${collapsible ? ' message-collapsible' : ''}${expanded ? ' expanded' : ''}"><header><span>${label}</span><time>${formatTime(message.at)}</time>${branch}${fold}</header>${body}</article>`
+  const body = message.pending && message.text === '' ? '<p class="message-streaming"><span class="streaming-dot"></span>正在回复</p>'
+    : `${collapsible && !expanded ? `<p class="message-summary">${escapeHtml(processSummary(message.text))}</p>` : renderMarkdown(message.text)}${message.pending ? '<p class="message-streaming"><span class="streaming-dot"></span>正在回复</p>' : ''}${process === null ? '' : processRecords(process, messageId)}`
+  const avatar = isUser ? '' : '<span class="message-avatar" aria-hidden="true"></span>'
+  return `<article class="message message-${message.kind}${message.pending ? ' message-pending' : ''}${collapsible ? ' message-collapsible' : ''}${expanded ? ' expanded' : ''}"><header>${avatar}<span class="message-role">${label}</span><time>${formatTime(message.at)}</time>${branch}${fold}</header><div class="message-body">${body}</div></article>`
 }
 
 function processRecords(process, messageId) {
@@ -753,11 +755,11 @@ function renderThread() {
   if (thread === null) return renderCanvas()
   const messages = messagesFor(thread)
   const waiting = state.pendingReplies.has(thread.dshSessionId)
-  return `<section class="detail-view"><div class="detail-heading"><div><span class="eyebrow">${thread.parentId === null ? 'DSH 会话' : 'DSH 分支'}</span><h1>${escapeHtml(questionFor(thread))}</h1><p>${escapeHtml(thread.dshSessionTitle ?? thread.title)}</p></div><div class="detail-actions"><button data-action="show-canvas">返回画布</button><button data-action="open-branch" data-thread="${thread.id}">创建分支</button><button data-action="open-dsh" data-thread="${thread.id}">打开 DSH</button></div></div><div class="message-stream">${messages.map(message => threadMessage(thread, message)).join('') || '<div class="note-empty">等待这条会话的第一条消息。</div>'}</div><form class="message-composer" data-compose="${thread.id}"><textarea maxlength="4000" placeholder="继续当前会话" ${waiting ? 'disabled' : ''}></textarea><button class="primary" type="submit" ${waiting ? 'disabled' : ''}>${waiting ? '等待回复' : '发送'}</button></form></section>`
+  return `<section class="detail-view"><header class="detail-head"><div class="detail-head-title"><div class="detail-head-meta"><span class="detail-badge">${thread.parentId === null ? '会话' : '分支'}</span>${thread.dshSessionTitle ?? thread.title ? `<span class="detail-subtitle">${escapeHtml(thread.dshSessionTitle ?? thread.title)}</span>` : ''}</div><h1>${escapeHtml(questionFor(thread))}</h1></div><div class="detail-head-actions"><button data-action="open-dsh" data-thread="${thread.id}" title="在原生对话中打开此会话">在 DSH 中打开</button><button data-action="open-branch" data-thread="${thread.id}" title="基于最新回答创建分支">创建分支</button><button class="primary" data-action="show-canvas">返回画布</button></div></header><div class="detail-scroll">${messages.map(message => threadMessage(thread, message)).join('') || '<div class="note-empty">等待这条会话的第一条消息。</div>'}</div><form class="message-composer" data-compose="${thread.id}"><textarea maxlength="4000" placeholder="继续当前会话…" ${waiting ? 'disabled' : ''}></textarea><button class="primary" type="submit" ${waiting ? 'disabled' : ''}>${waiting ? '等待回复' : '发送'}</button></form></section>`
 }
 
 function render() {
-  const detail = state.mode === 'thread' ? document.querySelector('.detail-view') : null
+  const detail = state.mode === 'thread' ? document.querySelector('.detail-scroll') : null
   const detailScrollTop = detail instanceof HTMLElement ? detail.scrollTop : null
   const cardScrollTops = new Map()
   if (state.mode === 'canvas') {
@@ -781,7 +783,7 @@ function render() {
     if (answer instanceof HTMLElement) answer.scrollTop = scrollTop
   }
   if (detailScrollTop !== null) window.requestAnimationFrame(() => {
-    const nextDetail = document.querySelector('.detail-view')
+    const nextDetail = document.querySelector('.detail-scroll')
     if (nextDetail instanceof HTMLElement) nextDetail.scrollTop = detailScrollTop
   })
 }

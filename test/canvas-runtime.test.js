@@ -84,3 +84,14 @@ test('renders markdown tables and allows higher canvas zoom', async () => {
   assert.match(markdown, /isTableDelimiter/)
   assert.match(source, /Math\.min\(4,/)
 })
+
+test('renders the refactored detail view with role-based messages', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const thread = source.slice(source.indexOf('function renderThread'), source.indexOf('function render()'))
+  const message = source.slice(source.indexOf('function threadMessage'), source.indexOf('function processRecords'))
+
+  assert.match(thread, /detail-scroll/)
+  assert.match(thread, /detail-head/)
+  assert.match(message, /message-avatar/)
+  assert.match(message, /message-body/)
+})
