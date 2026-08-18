@@ -898,6 +898,9 @@ app.addEventListener('click', async event => {
     state.error = ''
     render()
     void loadThreadHistory(thread)
+    // Bidirectional current-session sync: switch DSH's current session
+    // without closing the map; the client confirms via synapse:current-session.
+    if (thread.dshSessionId !== null) post('synapse:activate-session', { sessionId: thread.dshSessionId })
     return
   }
   const thread = state.workspace?.threads.find(item => item.id === button.dataset.thread)

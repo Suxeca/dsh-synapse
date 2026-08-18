@@ -60,3 +60,10 @@ test('selecting a session in the sidebar syncs the DSH current session', async (
 
   assert.match(selectThread, /synapse:activate-session/)
 })
+
+test('clicking a session card syncs the DSH current session', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const cardClick = source.slice(source.indexOf('if (!(button instanceof HTMLElement)) {'), source.indexOf("if (button.dataset.action === 'close')"))
+
+  assert.match(cardClick, /thread\.dshSessionId !== null\) post\('synapse:activate-session'/)
+})
