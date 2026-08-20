@@ -517,7 +517,7 @@ function normalizeState(value) {
   if ((value?.version === 2 || value?.version === 3 || value?.version === 4) && Array.isArray(value.workspaces)) {
     const hiddenSessionIds = Array.isArray(value.hiddenSessionIds) ? value.hiddenSessionIds.filter(item => typeof item === 'string') : []
     const dsArchivedSessionIds = Array.isArray(value.dsArchivedSessionIds) ? value.dsArchivedSessionIds.filter(item => typeof item === 'string') : []
-    migrated = value.version !== 3 || !Array.isArray(value.hiddenSessionIds) || !Array.isArray(value.dsArchivedSessionIds)
+    migrated = value.version < 3 || !Array.isArray(value.hiddenSessionIds) || !Array.isArray(value.dsArchivedSessionIds)
     const workspaces = value.workspaces.map(workspace => ({
       ...workspace,
       threads: Array.isArray(workspace.threads) ? workspace.threads.map(thread => {
@@ -532,7 +532,7 @@ function normalizeState(value) {
         return { ...rest, messages: notes }
       }) : [],
     }))
-    state = { ...value, version: 3, hiddenSessionIds, dsArchivedSessionIds, workspaces }
+    state = { ...value, version: value.version, hiddenSessionIds, dsArchivedSessionIds, workspaces }
   } else if (value?.version === 1 && Array.isArray(value.workspaces)) {
     const now = typeof value.updatedAt === 'string' ? value.updatedAt : new Date().toISOString()
     state = {

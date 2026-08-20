@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -252,4 +252,30 @@ test('drag-only mode never creates server projection threads and cleans legacy D
   const dragOnly = new WorkspaceStore(join(directory, 'state.json'), false)
   await dragOnly.syncSessions([{ id: 'legacy', title: '旧', cwd: 'C:\\work\\legacy', blank: false }])
   assert.equal((await dragOnly.list()).length, 0)
+})
+
+test('does not rewrite an up-to-date v4 file on load', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-synapse-idempotent-'))
+  const dataFile = join(directory, 'state.json')
+  const state = {
+    version: 4,
+    hiddenSessionIds: [],
+    dsArchivedSessionIds: [],
+    workspaces: [{
+      id: 'w-1', kind: 'dsh', cwd: 'C:\\work\\x', title: 'x',
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      threads: [{
+        id: 't-1', title: 's', parentId: null, dshSessionId: 's-1', dshSessionTitle: null,
+        color: '#0f766e', position: { x: 86, y: 82 }, sourceSeedLength: null,
+        createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+        messages: [{ id: 'm-1', kind: 'assistant', text: 'hi', sourceSeq: 1, at: '2026-01-01T00:00:00.000Z', process: [] }],
+      }],
+    }],
+  }
+  await writeFile(dataFile, JSON.stringify(state))
+  const before = (await stat(dataFile)).mtimeMs
+  await new Promise(resolve => setTimeout(resolve, 80))
+  await new WorkspaceStore(dataFile).ready
+  const after = (await stat(dataFile)).mtimeMs
+  assert.equal(after, before)
 })
