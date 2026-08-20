@@ -68,12 +68,13 @@ test('clicking a session card syncs the DSH current session', async () => {
   assert.match(cardClick, /thread\.dshSessionId !== null\) post\('synapse:activate-session'/)
 })
 
-test('switching the workspace in the map syncs DSH to its first session', async () => {
+test('workspace select only updates the left session library (drag-only map)', async () => {
   const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
   const select = source.slice(source.indexOf("app.addEventListener('change'"), source.indexOf("app.addEventListener('input'"))
 
-  assert.match(select, /choice\.sessionIds\[0\]/)
-  assert.match(select, /post\('synapse:activate-session'/)
+  assert.match(select, /state\.selectedDshWorkspaceId = choice\.id/)
+  assert.doesNotMatch(select, /post\('synapse:activate-session'/)
+  assert.doesNotMatch(select, /choice\.sessionIds\[0\]/)
 })
 
 test('renders markdown tables and allows higher canvas zoom', async () => {
@@ -104,10 +105,82 @@ test('persists dragged card positions and can focus the current session', async 
   assert.match(source, /data-action="focus-active"/)
 })
 
-test('switching workspaces syncs DSH to the most recently updated session', async () => {
+test('workspace switching does not auto-load sessions into the map', async () => {
   const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
   const select = source.slice(source.indexOf("app.addEventListener('change'"), source.indexOf("app.addEventListener('input'"))
 
-  assert.match(select, /updatedAt/)
-  assert.match(select, /post\('synapse:activate-session'/)
+  assert.doesNotMatch(select, /updatedAt/)
+  assert.doesNotMatch(select, /openDshWorkspace\(|openWorkspace\(/)
+  assert.match(select, /state\.selectedDshWorkspaceId = null/)
+})
+
+test('loads full DSH history into the canvas instead of only post-install projections', async () => {
+  const client = await readFile(new URL('../client.js', import.meta.url), 'utf8')
+  const app = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+
+  // Client side: a history RPC that opens/pages the session log and returns nodes.
+  assert.match(client, /synapse:load-history/)
+  assert.match(client, /loadOlder\(\)/)
+  assert.match(client, /messagesFromNodes\(snapshot\.nodes\)/)
+  // App side: real cache writes + merge with projected tail.
+  assert.match(app, /state\.historyBySession\.set\(thread\.dshSessionId, messages\)/)
+  assert.match(app, /function persistedMessagesFor\(thread\)/)
+})
+
+test('map is drag-to-load with localStorage cache, not auto-projection', async () => {
+  const app = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const client = await readFile(new URL('../client.js', import.meta.url), 'utf8')
+
+  // Drag source in the left session library.
+  assert.match(app, /draggable="true"/)
+  assert.match(app, /data-session-id=/)
+  // Drop target loads the session into the map.
+  assert.match(app, /app\.addEventListener\('drop'/)
+  assert.match(app, /loadSessionToMap\(/)
+  // The whole right map area is the drop zone (works even when canvas is empty).
+  assert.match(app, /event\.target instanceof Element \? event\.target\.closest\('\.main-stage'\)/)
+  assert.match(app, /setDropTarget\(true\)/)
+  // Persisted cache: read at startup + written on load.
+  assert.match(app, /LOADED_SESSIONS_KEY/)
+  assert.match(app, /localStorage\.getItem\(LOADED_SESSIONS_KEY\)/)
+  assert.match(app, /function persistLoadedSessions\(\)/)
+  // The left list carries per-session id/title from the DSH workspace snapshot.
+  assert.match(client, /sessions: workspace\.sessionIds\.map\(toSession\)/)
+})
+
+test('loaded sessions can be unloaded individually or all at once', async () => {
+  const app = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+
+  // Unload a single loaded session from the left list or map card.
+  assert.match(app, /function unloadSession\(sessionId\)/)
+  assert.match(app, /state\.loadedSessions\.delete\(sessionId\)/)
+  assert.match(app, /data-action="unload-session"/)
+  // Clear the whole map.
+  assert.match(app, /data-action="clear-map"/)
+  assert.match(app, /for \(const sessionId of \[\.\.\.state\.loadedSessions\.keys\(\)\]\) unloadSession\(sessionId\)/)
+})
+
+test('streaming from another conversation does not rebuild the canvas', async () => {
+  const app = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+
+  // While running===true, only store the live text and return (no render).
+  assert.match(app, /data\.running === true[\s\S]*?state\.liveReplies\.set[\s\S]*?return/)
+  // Polling refreshes metadata but must not re-render the canvas.
+  assert.match(app, /refreshProjection\(\)[\s\S]*?await refreshSummaries\(\{ renderAfter: false \}\)[\s\S]*?return false/)
+  // Wheel gestures suppress full re-renders.
+  assert.match(app, /wheelGestureUntil = Date\.now\(\) \+ 150/)
+  assert.match(app, /Date\.now\(\) >= state\.wheelGestureUntil/)
+})
+
+test('mirrors the Wallpaper Engine background inside the Synapse iframe', async () => {
+  const app = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const css = await readFile(new URL('../styles.css', import.meta.url), 'utf8')
+
+  assert.match(app, /dsh-wallpaper-engine:selection/)
+  assert.match(app, /function applySynapseWallpaper\(\)/)
+  assert.match(app, /synapse-wallpaper-layer/)
+  assert.match(app, /addEventListener\('storage'/)
+  assert.match(css, /body\[data-synapse-wallpaper\]/)
+  assert.match(css, /\.synapse-wallpaper-layer/)
+  assert.match(css, /\.synapse-wallpaper-scrim/)
 })

@@ -13,9 +13,10 @@ const LOCK_STALE_MS = 60_000
 
 /** JSON persistence for the Synapse workspace graph. */
 export class WorkspaceStore {
-  constructor(dataFile) {
+  constructor(dataFile, autoProjection = true) {
     if (typeof dataFile !== 'string' || dataFile.length === 0) throw new Error('synapse: config.dataFile must be a non-empty path')
     this.dataFile = dataFile
+    this.autoProjection = autoProjection
     this.state = undefined
     this.serial = Promise.resolve()
     this.ready = this.load()
@@ -100,16 +101,36 @@ export class WorkspaceStore {
     })
   }
 
-  /** Keep only the canvas graph in Synapse; DSH remains the source of session truth. */
-  async syncSessions(sessions, removedSessionIds = []) {
+  /**
+   * Keep only the canvas graph in Synapse; DSH remains the source of session truth.
+   *
+   * In drag-only mode (`autoProjection === false`) this never creates server-side
+   * projection threads: it prunes legacy auto-projected DSH workspaces so the
+   * server data layer also contains only sessions the user actually dragged in
+   * (which are persisted client-side in localStorage).
+   */
+  async syncSessions(sessions, removedSessionIds = [], archivedSessionIds = []) {
     return this.mutate(() => {
       if (!Array.isArray(sessions)) throw new InputError('sessions 必须是数组')
       if (!Array.isArray(removedSessionIds) || removedSessionIds.some(item => typeof item !== 'string')) throw new InputError('removedSessionIds 必须是字符串数组')
+      if (!Array.isArray(archivedSessionIds) || archivedSessionIds.some(item => typeof item !== 'string')) throw new InputError('archivedSessionIds 必须是字符串数组')
+      // Mirror DSH's registry-global archive set (the client holds the
+      // authoritative copy from workspaces.list). Persist it so boot-time
+      // replay never resurrects a session the user archived natively.
+      this.state.dsArchivedSessionIds = [...new Set(archivedSessionIds)]
+      if (!this.autoProjection) {
+        // Drag-only data layer: drop every auto-projected DSH workspace.
+        // Manual/legacy non-dsh workspaces are preserved.
+        this.state.workspaces = this.state.workspaces.filter(workspace => workspace.kind !== 'dsh')
+        return this.list()
+      }
       const blankIds = new Set(sessions.filter(item => item?.blank === true && typeof item.id === 'string').map(item => item.id))
       const removedIds = new Set(removedSessionIds)
+      const archivedIds = new Set(this.state.dsArchivedSessionIds)
+      const skipIds = new Set([...blankIds, ...removedIds, ...archivedIds])
       for (const workspace of this.state.workspaces) {
         if (workspace.kind !== 'dsh') continue
-        workspace.threads = workspace.threads.filter(thread => !blankIds.has(thread.dshSessionId) && !removedIds.has(thread.dshSessionId))
+        workspace.threads = workspace.threads.filter(thread => !skipIds.has(thread.dshSessionId))
       }
       this.state.workspaces = this.state.workspaces.filter(workspace => workspace.kind !== 'dsh' || workspace.threads.length > 0)
       for (const item of sessions) {
@@ -118,6 +139,9 @@ export class WorkspaceStore {
         // Canvas archiving is persistent UI state. A normal DSH list refresh
         // must not recreate a session that the user deliberately archived.
         if (this.state.hiddenSessionIds.includes(item.id)) continue
+        // DSH-native archive: the workspace registry hides archived sessions
+        // from grouping; mirror that here so they never become canvas nodes.
+        if (archivedIds.has(item.id)) continue
         const workspace = this.dshWorkspace(item.cwd, 'DSH 任务')
         const session = { id: item.id, header: { meta: { cwd: item.cwd }, parentSession: typeof item.parentId === 'string' ? item.parentId : undefined }, title: typeof item.title === 'string' ? item.title : undefined, events: [] }
         const thread = this.dshThread(workspace, session)
@@ -187,7 +211,7 @@ export class WorkspaceStore {
   /** Replay one live DSH session into the dedicated projection workspace. */
   async projectSession(session, replayFrom = 0, workspaceTitle = 'DSH 任务') {
     return this.mutate(() => {
-      if (this.state.hiddenSessionIds.includes(session.id)) return null
+      if (this.isProjectionHidden(session.id)) return null
       const workspace = this.dshWorkspace(sessionCwd(session), workspaceTitle)
       const thread = this.dshThread(workspace, session)
       for (const event of session.events) {
@@ -200,7 +224,7 @@ export class WorkspaceStore {
   /** Project one committed DSH session event. Repeated sequence numbers are ignored. */
   async projectEvent(session, event, workspaceTitle = 'DSH 任务') {
     return this.mutate(() => {
-      if (this.state.hiddenSessionIds.includes(session.id)) return null
+      if (this.isProjectionHidden(session.id)) return null
       const workspace = this.dshWorkspace(sessionCwd(session), workspaceTitle)
       const thread = this.dshThread(workspace, session)
       this.projectEventInto(workspace, thread, event)
@@ -212,7 +236,7 @@ export class WorkspaceStore {
   async projectEvents(session, events, workspaceTitle = 'DSH 任务') {
     if (events.length === 0) return null
     return this.mutate(() => {
-      if (this.state.hiddenSessionIds.includes(session.id)) return null
+      if (this.isProjectionHidden(session.id)) return null
       const workspace = this.dshWorkspace(sessionCwd(session), workspaceTitle)
       const thread = this.dshThread(workspace, session)
       for (const event of events) this.projectEventInto(workspace, thread, event)
@@ -229,7 +253,7 @@ export class WorkspaceStore {
       if (migrated) await this.save()
     } catch (error) {
       if (error?.code !== 'ENOENT') throw new Error(`synapse: cannot read ${this.dataFile}: ${error.message}`)
-      this.state = { version: 4, hiddenSessionIds: [], workspaces: [] }
+      this.state = { version: 4, hiddenSessionIds: [], dsArchivedSessionIds: [], workspaces: [] }
       await this.save()
     }
   }
@@ -331,6 +355,12 @@ export class WorkspaceStore {
       if (thread !== undefined) return { workspace, thread }
     }
     throw new NotFoundError('节点不存在')
+  }
+
+  /** A session is hidden from projection when the user archived it in the
+   * canvas (hiddenSessionIds) or natively in DSH (dsArchivedSessionIds). */
+  isProjectionHidden(sessionId) {
+    return this.state.hiddenSessionIds.includes(sessionId) || this.state.dsArchivedSessionIds.includes(sessionId)
   }
 
   dshWorkspace(cwd, fallbackTitle) {
@@ -486,7 +516,8 @@ function normalizeState(value) {
   let state
   if ((value?.version === 2 || value?.version === 3 || value?.version === 4) && Array.isArray(value.workspaces)) {
     const hiddenSessionIds = Array.isArray(value.hiddenSessionIds) ? value.hiddenSessionIds.filter(item => typeof item === 'string') : []
-    migrated = value.version !== 3 || !Array.isArray(value.hiddenSessionIds)
+    const dsArchivedSessionIds = Array.isArray(value.dsArchivedSessionIds) ? value.dsArchivedSessionIds.filter(item => typeof item === 'string') : []
+    migrated = value.version !== 3 || !Array.isArray(value.hiddenSessionIds) || !Array.isArray(value.dsArchivedSessionIds)
     const workspaces = value.workspaces.map(workspace => ({
       ...workspace,
       threads: Array.isArray(workspace.threads) ? workspace.threads.map(thread => {
@@ -501,12 +532,13 @@ function normalizeState(value) {
         return { ...rest, messages: notes }
       }) : [],
     }))
-    state = { ...value, version: 3, hiddenSessionIds, workspaces }
+    state = { ...value, version: 3, hiddenSessionIds, dsArchivedSessionIds, workspaces }
   } else if (value?.version === 1 && Array.isArray(value.workspaces)) {
     const now = typeof value.updatedAt === 'string' ? value.updatedAt : new Date().toISOString()
     state = {
       version: 3,
       hiddenSessionIds: [],
+      dsArchivedSessionIds: [],
       workspaces: value.workspaces.map((workspace, index) => {
         const events = Array.isArray(workspace.events) ? workspace.events : []
         const workspaceNow = typeof workspace.updatedAt === 'string' ? workspace.updatedAt : now
@@ -684,8 +716,8 @@ function page() {
 
 /** Mount Synapse routes on the existing DSH Web Server. */
 export function apply(ctx, config) {
-  const store = new WorkspaceStore(config?.dataFile)
   const autoProjection = config?.autoProjection !== false
+  const store = new WorkspaceStore(config?.dataFile, autoProjection)
   const projectionWorkspaceTitle = typeof config?.projectionWorkspaceTitle === 'string' && config.projectionWorkspaceTitle.trim() !== ''
     ? config.projectionWorkspaceTitle.trim().slice(0, MAX_TITLE_LENGTH)
     : 'DSH 任务'
@@ -747,7 +779,7 @@ export function apply(ctx, config) {
       }
       const branch = /^\/synapse\/api\/threads\/([0-9a-f-]+)\/branch$/i.exec(path)
       if (branch !== null && req.method === 'POST') return sendJson(res, 201, { thread: await store.branch(branch[1], await readJson(req)) })
-      if (path === '/synapse/api/sessions/sync' && req.method === 'POST') { const body = await readJson(req); return sendJson(res, 200, { workspaces: await store.syncSessions(body.sessions, body.removedSessionIds) }) }
+      if (path === '/synapse/api/sessions/sync' && req.method === 'POST') { const body = await readJson(req); return sendJson(res, 200, { workspaces: await store.syncSessions(body.sessions, body.removedSessionIds, body.archivedSessionIds) }) }
       const messages = /^\/synapse\/api\/threads\/([0-9a-f-]+)\/messages$/i.exec(path)
       if (messages !== null && req.method === 'POST') return sendJson(res, 201, { thread: await store.addMessage(messages[1], (await readJson(req)).text) })
       const thread = /^\/synapse\/api\/threads\/([0-9a-f-]+)$/i.exec(path)

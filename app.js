@@ -22,18 +22,52 @@ const CARD_HEIGHT = 276
 const CARD_GAP_Y = 42
 const CAMERA_INSET_X = 56
 const CAMERA_INSET_Y = 56
+const LOADED_SESSIONS_KEY = 'dsh-synapse:loaded-sessions:v1'
+const loadedSessionsFromStorage = (() => {
+  try {
+    const value = JSON.parse(localStorage.getItem(LOADED_SESSIONS_KEY) ?? '{}')
+    return typeof value === 'object' && value !== null ? value : {}
+  } catch { return {} }
+})()
 const state = {
   summaries: [], workspace: null, activeId: null, mode: 'canvas', zoom: 1, currentDsh: null, sidebarCollapsed: false,
   dshWorkspaces: [], selectedDshWorkspaceId: null,
   historyBySession: new Map(), historyRequests: new Map(), pendingReplies: new Map(), pendingRpc: new Map(), liveReplies: new Map(),
+  // Loaded-on-demand sessions: sessionId -> { messages, cachedAt, title }.
+  // This is the module that drives the map; the left list is the source module.
+  loadedSessions: new Map(Object.entries(loadedSessionsFromStorage)),
   draft: null, error: '', workspaceLoad: 0, branchAnchors: new Map(savedBranchAnchors), cardPositions: new Map(savedCardPositions),
   dragging: false, canvasGesture: false, canvasRefreshAfter: 0, canvasViewInitialized: false, canvasCamera: { x: 0, y: 0 },
   expandedMessageIds: new Set(),
+  // Whether the map overlay is actually visible. The iframe stays mounted
+  // while hidden, so this flag stops all background polling/rendering work.
+  mapVisible: false,
+  // Suppress re-renders briefly after a wheel zoom/scroll so an active
+  // gesture is never interrupted by a full canvas rebuild.
+  wheelGestureUntil: 0,
+}
+
+function persistLoadedSessions() {
+  try { localStorage.setItem(LOADED_SESSIONS_KEY, JSON.stringify(Object.fromEntries(state.loadedSessions))) } catch { /* Private browsing may disable local storage. */ }
+}
+
+function cacheLoadedSession(sessionId, messages, title = null, parentId = null) {
+  const previous = state.loadedSessions.get(sessionId)
+  state.loadedSessions.set(sessionId, {
+    messages: Array.isArray(messages) ? messages : [],
+    cachedAt: Date.now(),
+    title,
+    parentId: parentId ?? previous?.parentId ?? null,
+  })
+  persistLoadedSessions()
 }
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]))
 const formatTime = value => new Date(value).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-const currentThread = () => state.workspace?.threads.find(thread => thread.id === state.activeId) ?? state.workspace?.threads[0] ?? null
+const currentThread = () => {
+  const threads = mapThreads()
+  return threads.find(thread => thread.id === state.activeId) ?? threads[0] ?? null
+}
 const threadListTitle = thread => thread.dshSessionTitle ?? thread.title ?? questionFor(thread)
 
 function rememberBranchAnchor(sessionId, cardId) {
@@ -76,7 +110,7 @@ function post(type, payload = {}) {
   if (window.parent !== window) window.parent.postMessage({ source: 'dsh-synapse', type, ...payload }, window.location.origin)
 }
 
-function dshRpc(type, payload = {}) {
+function dshRpc(type, payload = {}, timeout = 20_000) {
   if (window.parent === window) return Promise.reject(new Error('请从 DSH 页面打开 Synapse 后再操作会话'))
   const requestId = crypto.randomUUID()
   post(type, { requestId, ...payload })
@@ -84,7 +118,7 @@ function dshRpc(type, payload = {}) {
     const timer = window.setTimeout(() => {
       state.pendingRpc.delete(requestId)
       reject(new Error('DSH 未在规定时间内响应'))
-    }, 20_000)
+    }, timeout)
     state.pendingRpc.set(requestId, { resolve, reject, timer })
   })
 }
@@ -111,26 +145,88 @@ function messagesFromEvents(events) {
   })
 }
 
-async function loadThreadHistory() {}
+async function loadThreadHistory(thread, force = false) {
+  if (thread?.dshSessionId === null || thread?.dshSessionId === undefined) return
+  if (!state.mapVisible) return
+  // In drag-only mode, sessions already loaded into the map are the source;
+  // never re-fetch them through the legacy projection path.
+  if (state.loadedSessions.has(thread.dshSessionId)) return
+  if (!force && state.historyBySession.has(thread.dshSessionId)) return
+  try {
+    const result = await dshRpc('synapse:load-history', { sessionId: thread.dshSessionId }, 60_000)
+    const messages = Array.isArray(result?.messages) ? result.messages : []
+    state.historyBySession.set(thread.dshSessionId, messages)
+    if (canReplaceView()) render()
+  } catch {
+    // Keep the projected fallback; a later open/refresh can retry.
+  }
+}
+
+/** Build a map thread object from a loaded session's message list. */
+function threadFromLoadedSession(sessionId, entry, sessionSummary = null) {
+  const title = sessionSummary?.title ?? entry?.title ?? (entry?.messages?.find(message => message.kind === 'user')?.text ?? 'DSH 会话')
+  const messages = Array.isArray(entry?.messages) ? entry.messages : []
+  const now = new Date().toISOString()
+  return {
+    id: `loaded:${sessionId}`,
+    title: typeof title === 'string' && title.trim() !== '' ? title.slice(0, 120) : 'DSH 会话',
+    parentId: entry?.parentId ?? null,
+    dshSessionId: sessionId,
+    dshSessionTitle: typeof title === 'string' ? title.slice(0, 120) : null,
+    color: '#3478f6',
+    position: { x: 86, y: 82 },
+    createdAt: now,
+    updatedAt: now,
+    messages,
+  }
+}
+
+/**
+ * Load a session into the map (the drag-and-drop entry point).
+ * Returns the cached thread immediately if already loaded; otherwise pulls the
+ * full DSH history, caches it in localStorage, and returns a fresh thread.
+ * When `parentThread` is given (a fork created from a loaded map thread), the
+ * new thread is linked to it and cached with that parent link.
+ */
+async function loadSessionToMap(sessionId, sessionSummary = null, parentThread = null, force = false) {
+  if (typeof sessionId !== 'string' || sessionId === '') return null
+  const cached = state.loadedSessions.get(sessionId)
+  if (cached !== undefined && !force) {
+    if (parentThread !== null && cached.parentId === null) {
+      cacheLoadedSession(sessionId, cached.messages, cached.title, parentThread.id)
+    }
+    return threadFromLoadedSession(sessionId, cached, sessionSummary)
+  }
+  if (!state.mapVisible) return cached === undefined ? null : threadFromLoadedSession(sessionId, cached, sessionSummary)
+  const result = await dshRpc('synapse:load-history', { sessionId }, 60_000)
+  const messages = Array.isArray(result?.messages) ? result.messages : []
+  const title = sessionSummary?.title ?? null
+  cacheLoadedSession(sessionId, messages, title, parentThread?.id ?? null)
+  return threadFromLoadedSession(sessionId, { messages, title, parentId: parentThread?.id ?? null }, sessionSummary)
+}
+
+/** All threads currently on the map = the loaded sessions, in load order. */
+function mapThreads() {
+  return [...state.loadedSessions.entries()].map(([sessionId, entry]) => threadFromLoadedSession(sessionId, entry, sessionSummaryById(sessionId)))
+}
+
+function sessionSummaryById(sessionId) {
+  for (const workspace of state.dshWorkspaces) {
+    const session = (workspace.sessions ?? []).find(item => item.id === sessionId)
+    if (session !== undefined) return { title: session.title ?? null }
+  }
+  return null
+}
 
 function canReplaceView() {
-  return state.draft === null && !state.dragging && !state.canvasGesture && Date.now() >= state.canvasRefreshAfter && !document.activeElement?.matches('textarea')
+  return state.mapVisible && state.draft === null && !state.dragging && !state.canvasGesture && Date.now() >= state.canvasRefreshAfter && Date.now() >= state.wheelGestureUntil && !document.activeElement?.matches('textarea')
 }
 
 function deferCanvasRefresh(delay = 700) {
   state.canvasRefreshAfter = Math.max(state.canvasRefreshAfter, Date.now() + delay)
 }
 
-function currentDshWorkspace() {
-  const id = state.currentDsh?.id
-  return typeof id === 'string' ? state.dshWorkspaces.find(workspace => workspace.sessionIds.includes(id)) : undefined
-}
-
-function selectedDshWorkspace() {
-  return state.dshWorkspaces.find(workspace => workspace.id === state.selectedDshWorkspaceId)
-}
-
-function currentDshThread(threads = state.workspace?.threads ?? []) {
+function currentDshThread(threads = mapThreads()) {
   const id = state.currentDsh?.id
   return typeof id === 'string' ? threads.find(thread => thread.dshSessionId === id) : undefined
 }
@@ -140,69 +236,24 @@ function workspaceChoices() {
   return state.summaries.map(workspace => ({ id: workspace.id, title: workspace.title, path: workspace.cwd, sessionIds: [], source: 'projection' }))
 }
 
-async function threadsForDshWorkspace(workspace) {
-  if (workspace.sessionIds.length === 0) return []
-  const requested = new Set(workspace.sessionIds)
-  const projections = await Promise.all(state.summaries.map(summary => api(`/synapse/api/workspaces/${summary.id}`)))
-  return projections.flatMap(projection => projection.workspace.threads.filter(thread => requested.has(thread.dshSessionId)))
-}
-
-async function openDshWorkspace(id, { renderAfter = true } = {}) {
-  const workspace = state.dshWorkspaces.find(item => item.id === id)
-  if (workspace === undefined) return false
-  const load = ++state.workspaceLoad
-  state.selectedDshWorkspaceId = id
-  const threads = await threadsForDshWorkspace(workspace)
-  if (load !== state.workspaceLoad) return true
-  const nextWorkspaceId = `dsh:${workspace.id}`
-  if (state.workspace?.id !== nextWorkspaceId) resetCanvasCamera()
-  state.workspace = { id: nextWorkspaceId, title: workspace.title, cwd: workspace.path, threads }
-  const currentThread = currentDshThread(state.workspace.threads)
-  state.activeId = currentThread?.id ?? (state.workspace.threads.some(thread => thread.id === state.activeId) ? state.activeId : state.workspace.threads[0]?.id ?? null)
-  if (renderAfter && canReplaceView()) render()
-  await Promise.all(state.workspace.threads.map(thread => loadThreadHistory(thread, false)))
-  if (renderAfter && load === state.workspaceLoad && canReplaceView()) render()
-  return true
-}
-
-async function openCurrentWorkspace() {
-  const workspace = currentDshWorkspace()
-  if (workspace === undefined || workspace.id === state.selectedDshWorkspaceId) return false
-  return openDshWorkspace(workspace.id)
-}
-
 async function refreshSummaries({ renderAfter = true } = {}) {
   const before = JSON.stringify(state.summaries)
   const body = await api('/synapse/api/workspaces')
   state.summaries = body.workspaces
   const changed = before !== JSON.stringify(state.summaries)
-  const current = state.workspace?.id
-  if (state.selectedDshWorkspaceId === null && current !== null && !state.summaries.some(item => item.id === current)) state.workspace = null
-  const selected = selectedDshWorkspace()
-  if (selected !== undefined && (changed || state.workspace === null)) await openDshWorkspace(selected.id, { renderAfter })
-  else if (state.workspace === null && state.summaries.length > 0) await openWorkspace(state.summaries[0].id)
-  else if (renderAfter && changed && canReplaceView()) render()
+  // The map is drag-only now: summaries feed the left session library, not
+  // the canvas. Do not auto-open any workspace/thread here.
+  if (renderAfter && changed && canReplaceView()) render()
   return changed
 }
 
-async function openWorkspace(id, { renderAfter = true } = {}) {
-  const load = ++state.workspaceLoad
-  const body = await api(`/synapse/api/workspaces/${id}`)
-  if (load !== state.workspaceLoad) return
-  if (state.workspace?.id !== body.workspace.id) resetCanvasCamera()
-  state.workspace = body.workspace
-  state.activeId = state.workspace.threads.some(thread => thread.id === state.activeId) ? state.activeId : state.workspace.threads[0]?.id ?? null
-  if (renderAfter && canReplaceView()) render()
-  await Promise.all(state.workspace.threads.map(thread => loadThreadHistory(thread, false)))
-  if (renderAfter && load === state.workspaceLoad && canReplaceView()) render()
-}
-
 async function refreshProjection() {
-  const summariesChanged = await refreshSummaries({ renderAfter: false })
-  if (!summariesChanged || state.workspace === null || !canReplaceView()) return summariesChanged
-  if (state.selectedDshWorkspaceId !== null) await openDshWorkspace(state.selectedDshWorkspaceId)
-  else await openWorkspace(state.workspace.id)
-  return true
+  // Polling only keeps the left sidebar/workspace metadata fresh. It must
+  // never rebuild the canvas: the map is driven by loadedSessions (drag +
+  // localStorage cache) and live messages, so a periodic re-render is what
+  // makes the view flash while another conversation is active.
+  await refreshSummaries({ renderAfter: false })
+  return false
 }
 
 function openNewSession() {
@@ -216,33 +267,25 @@ function openNewSession() {
   window.setTimeout(() => document.querySelector('[data-draft] textarea')?.focus(), 0)
 }
 
-async function archiveThread(thread) {
-  if (!window.confirm(`归档画布中的「${thread.title}」及其分支？DSH 原会话会保留，可在 DSH 内继续查看。`)) return
-  await api(`/synapse/api/threads/${thread.id}`, { method: 'DELETE' })
-  state.historyBySession.delete(thread.dshSessionId)
-  if (state.workspace !== null) {
-    const removed = new Set([thread.id])
-    for (let changed = true; changed;) {
-      changed = false
-      for (const item of state.workspace.threads) {
-        if (item.parentId !== null && removed.has(item.parentId) && !removed.has(item.id)) {
-          removed.add(item.id)
-          changed = true
-        }
-      }
-    }
-    state.workspace.threads = state.workspace.threads.filter(item => !removed.has(item.id))
-    for (const key of [...state.cardPositions.keys()]) {
-      if ([...removed].some(id => key.startsWith(`${id}:`))) state.cardPositions.delete(key)
-    }
-    state.activeId = state.activeId !== null && state.workspace.threads.some(item => item.id === state.activeId)
-      ? state.activeId
-      : state.workspace.threads[0]?.id ?? null
-    render()
-  } else {
-    state.activeId = null
+function unloadSession(sessionId) {
+  if (typeof sessionId !== 'string' || !state.loadedSessions.has(sessionId)) return false
+  state.loadedSessions.delete(sessionId)
+  state.historyBySession.delete(sessionId)
+  state.liveReplies.delete(sessionId)
+  persistLoadedSessions()
+  for (const key of [...state.cardPositions.keys()]) {
+    if (key.startsWith(`loaded:${sessionId}:`) || key.startsWith(`${sessionId}:`)) state.cardPositions.delete(key)
   }
-  await refreshSummaries()
+  const threads = mapThreads()
+  state.activeId = threads.some(item => item.id === state.activeId) ? state.activeId : threads[0]?.id ?? null
+  if (canReplaceView()) render()
+  return true
+}
+
+async function archiveThread(thread) {
+  if (thread?.dshSessionId === null || thread?.dshSessionId === undefined) return
+  if (!window.confirm(`从地图卸载「${thread.title}」？DSH 原会话会保留，可随时再次拖入。`)) return
+  unloadSession(thread.dshSessionId)
 }
 
 function openContinue(parent, anchorId = undefined) {
@@ -281,7 +324,7 @@ async function submitDraft() {
   const draft = state.draft
   const text = draft?.text.trim()
   if (draft === null || !text) return
-  const branchPosition = draft.kind === 'branch' && state.workspace !== null ? draftPlacement(conversationCards(state.workspace.threads))?.position : undefined
+  const branchPosition = draft.kind === 'branch' ? draftPlacement(conversationCards(mapThreads()))?.position : undefined
   draft.sending = true
   state.error = ''
   render()
@@ -296,7 +339,7 @@ async function submitDraft() {
       }, 150)
       return
     }
-    const parent = state.workspace?.threads.find(thread => thread.id === draft.parentId)
+    const parent = mapThreads().find(thread => thread.id === draft.parentId)
     if (parent === undefined) throw new Error('来源会话不存在')
     if (draft.kind === 'continue') {
       state.draft = null
@@ -305,18 +348,19 @@ async function submitDraft() {
     }
     const session = await dshRpc('synapse:fork-session', { sessionId: parent.dshSessionId, atSeq: draft.atSeq })
     if (draft.anchorId !== undefined) rememberBranchAnchor(session.id, draft.anchorId)
-    const result = await api(`/synapse/api/threads/${parent.id}/branch`, { method: 'POST', body: JSON.stringify({ title: text.slice(0, 42), dshSessionId: session.id, dshSessionTitle: session.title, position: branchPosition }) })
-    if (state.workspace !== null && !state.workspace.threads.some(thread => thread.id === result.thread.id || thread.dshSessionId === result.thread.dshSessionId)) state.workspace.threads.push(result.thread)
-    state.activeId = result.thread.id
+    // Drag-only model: a fork becomes a loaded map session linked to its parent.
+    const thread = await loadSessionToMap(session.id, { title: session.title }, parent)
+    if (thread === null) throw new Error('分支会话加载失败')
+    state.activeId = thread.id
     state.draft = null
-    state.pendingReplies.set(result.thread.dshSessionId, { text, at: Date.now() })
+    state.pendingReplies.set(thread.dshSessionId, { text, at: Date.now() })
     render()
-    await dshRpc('synapse:send-message', { sessionId: result.thread.dshSessionId, text })
-    void loadThreadHistory(result.thread)
+    await dshRpc('synapse:send-message', { sessionId: thread.dshSessionId, text })
+    void loadThreadHistory(thread)
     await refreshProjection()
   } catch (error) {
     if (draft.kind === 'branch') {
-      state.pendingReplies.delete(state.workspace?.threads.find(thread => thread.id === state.activeId)?.dshSessionId)
+      state.pendingReplies.delete(mapThreads().find(thread => thread.id === state.activeId)?.dshSessionId)
       if (state.draft !== null) state.draft = { ...draft, sending: false }
     } else {
       state.draft = { ...draft, sending: false }
@@ -325,8 +369,17 @@ async function submitDraft() {
   }
 }
 
-function threadsById() { return new Map((state.workspace?.threads ?? []).map(thread => [thread.id, thread])) }
-function persistedMessagesFor(thread) { return state.historyBySession.get(thread.dshSessionId) ?? thread.messages ?? [] }
+function threadsById() { return new Map(mapThreads().map(thread => [thread.id, thread])) }
+function persistedMessagesFor(thread) {
+  const projected = thread.messages ?? []
+  const history = state.historyBySession.get(thread.dshSessionId)
+  if (history === undefined) return projected
+  // History (from DSH's full log) is authoritative for already-seen seqs.
+  // Append only projected events that arrived after the history snapshot.
+  const knownSeqs = new Set(history.map(message => message.sourceSeq).filter(Number.isInteger))
+  const tail = projected.filter(message => Number.isInteger(message.sourceSeq) && !knownSeqs.has(message.sourceSeq))
+  return [...history, ...tail]
+}
 
 function pendingUserIndex(messages, pending) {
   return messages.findLastIndex(message => message.kind === 'user' && message.text === pending.text && new Date(message.at).getTime() >= pending.at - 2_000)
@@ -670,7 +723,7 @@ function conversationCard(card) {
     <div class="thread-card-head"><span class="topic-dot"></span><button class="thread-title" data-action="show-thread" data-thread="${card.dshThreadId}" title="查看完整会话：${escapeHtml(card.question)}">${escapeHtml(card.question)}</button>${continueButton}</div>
     <div class="thread-meta"><span>${source}</span><span>第 ${card.turnIndex + 1} 轮</span></div>
     <div class="thread-answer">${card.answer === null ? '<p class="thread-answer-empty">等待助手回复</p>' : card.answer.pending && card.answer.text === '' ? '<p class="thread-answer-pending">正在回复</p>' : `${renderMarkdown(card.answer.text)}${card.answer.pending ? '<p class="thread-answer-pending">正在回复</p>' : ''}`}</div>
-    <footer><button data-action="show-thread" data-thread="${card.dshThreadId}">详情</button><button data-action="open-branch" data-thread="${card.dshThreadId}" data-card="${card.id}"${branchSequence}>分支</button><button data-action="open-dsh" data-thread="${card.dshThreadId}">打开 DSH</button><button data-action="archive-thread" data-thread="${card.dshThreadId}">归档</button></footer>
+    <footer><button data-action="show-thread" data-thread="${card.dshThreadId}">详情</button><button data-action="open-branch" data-thread="${card.dshThreadId}" data-card="${card.id}"${branchSequence}>分支</button><button data-action="open-dsh" data-thread="${card.dshThreadId}">打开 DSH</button><button data-action="archive-thread" data-thread="${card.dshThreadId}">卸载</button></footer>
   </article>`
 }
 
@@ -703,8 +756,8 @@ function draftCard(cards) {
 }
 
 function renderCanvas() {
-  const threads = state.workspace?.threads ?? []
-  if (threads.length === 0 && state.draft?.kind !== 'new') return `<section class="empty-canvas"><strong>当前工作目录还没有 DSH 对话。</strong><p>点击新会话，在画布中输入第一条消息。</p><div><button class="primary" type="button" data-action="create-session">新建会话</button></div></section>`
+  const threads = mapThreads()
+  if (threads.length === 0 && state.draft?.kind !== 'new') return `<section class="empty-canvas"><strong>地图还没有会话。</strong><p>从左侧历史对话区把一个会话拖到地图上，即可展开它的完整路径节点。</p><div><button class="primary" type="button" data-action="create-session">新建会话</button></div></section>`
   const cards = conversationCards(threads)
   if (!state.canvasViewInitialized) {
     state.canvasCamera = initialCanvasCamera(cards)
@@ -753,6 +806,23 @@ function processRecords(process, messageId) {
   return `<section class="process-records${expanded ? ' expanded' : ''}"><button class="process-records-fold" data-action="toggle-message" data-message="${escapeHtml(key)}"><span>${expanded ? '收起过程记录' : '过程记录'}</span><span class="process-count">${process.length}</span></button>${expanded ? entries : ''}</section>`
 }
 
+function renderSessionLibrary() {
+  const workspaces = state.dshWorkspaces
+  if (workspaces.length === 0) return '<nav class="session-library"><p class="tree-empty">暂未同步会话</p></nav>'
+  const sections = workspaces.map(workspace => {
+    const sessions = workspace.sessions ?? []
+    const items = sessions.map(session => {
+      const loaded = state.loadedSessions.has(session.id)
+      const title = session.title ?? session.id
+      return `<div class="session-item${loaded ? ' loaded' : ''}" draggable="true" data-session-id="${escapeHtml(session.id)}" title="${escapeHtml(title)}">
+        <span class="session-dot"></span><span class="session-title">${escapeHtml(title)}</span>${loaded ? '<i class="session-loaded">已载入</i>' : ''}${loaded ? `<button class="session-unload" type="button" data-action="unload-session" data-session-id="${escapeHtml(session.id)}" title="卸载此会话地图" aria-label="卸载 ${escapeHtml(title)}">×</button>` : ''}
+      </div>`
+    }).join('') || '<p class="tree-empty">此工作区暂无会话</p>'
+    return `<section class="session-group"><h3 class="session-group-title">${escapeHtml(workspace.title)}</h3><div class="session-group-body">${items}</div></section>`
+  }).join('')
+  return `<nav class="session-library">${sections}</nav>`
+}
+
 function renderThread() {
   const thread = currentThread()
   if (thread === null) return renderCanvas()
@@ -772,14 +842,14 @@ function render() {
     }
   }
   const workspace = state.workspace
-  const threads = workspace?.threads ?? []
+  const threads = mapThreads()
   const view = state.mode === 'thread' ? renderThread() : renderCanvas()
   const choices = workspaceChoices()
   const selectedWorkspaceId = state.selectedDshWorkspaceId ?? workspace?.id
-  const canvasControls = state.mode === 'canvas' && (threads.length > 0 || state.draft?.kind === 'new') ? `<div class="canvas-controls"><button data-action="layout">整理节点</button><button data-action="focus-active" title="定位到当前会话">定位</button><button data-action="zoom-out" aria-label="缩小">-</button><span>${Math.round(state.zoom * 100)}%</span><button data-action="zoom-in" aria-label="放大">+</button></div>` : ''
+  const canvasControls = state.mode === 'canvas' && (threads.length > 0 || state.draft?.kind === 'new') ? `<div class="canvas-controls"><button data-action="layout">整理节点</button><button data-action="focus-active" title="定位到当前会话">定位</button><button data-action="zoom-out" aria-label="缩小">-</button><span>${Math.round(state.zoom * 100)}%</span><button data-action="zoom-in" aria-label="放大">+</button><button data-action="clear-map" title="卸载所有已载入会话">清空地图</button></div>` : ''
   const detailAvailable = currentThread() !== null
   const canvasTabs = `<nav class="canvas-tabs" aria-label="会话地图视图"><button class="${state.mode === 'canvas' ? 'active' : ''}" data-action="show-canvas">地图</button><button class="${state.mode === 'thread' ? 'active' : ''}" data-action="show-thread" data-thread="${state.activeId ?? ''}" ${detailAvailable ? '' : 'disabled'}>详情</button></nav>`
-  app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><label class="workspace-label"><span>工作区</span><span class="workspace-select"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2.5 4.75h3l1.2 1.5h6.8v5.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"/></svg><select data-action="select-workspace" aria-label="选择工作区" ${state.draft !== null ? 'disabled' : ''}>${choices.map(item => `<option value="${item.id}" title="${escapeHtml(item.path ?? item.title)}" ${item.id === selectedWorkspaceId ? 'selected' : ''}>${escapeHtml(item.title)}</option>`).join('')}</select></span></label><div class="sidebar-heading"><span>会话</span></div><nav class="thread-tree">${threads.map(thread => `<button class="tree-row ${thread.id === state.activeId ? 'active' : ''}" data-action="select-thread" data-thread="${thread.id}" style="--thread-color:#374151"><span class="tree-dot"></span><span>${escapeHtml(threadListTitle(thread))}</span>${thread.parentId === null ? '' : '<i>分支</i>'}</button>`).join('') || '<p class="tree-empty">暂未同步会话</p>'}</nav></aside><header class="topbar"><div class="view-switch" role="group" aria-label="视图切换"><button data-action="close" type="button" aria-pressed="false">对话</button><button class="active" type="button" aria-pressed="true">会话地图</button></div>${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message" role="alert"><span>${escapeHtml(state.error)}</span><button data-action="dismiss-error" aria-label="关闭" title="关闭">×</button></div>` : ''}${canvasTabs}${view}</section></main>`
+  app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><div class="sidebar-heading"><span>历史对话</span><span class="sidebar-hint">拖到右侧地图加载</span></div>${renderSessionLibrary()}</aside><header class="topbar"><div class="topbar-spacer"></div><div class="view-switch" role="group" aria-label="视图切换"><button data-action="close" type="button" aria-pressed="false">对话</button><button class="active" type="button" aria-pressed="true">会话地图</button></div>${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message" role="alert"><span>${escapeHtml(state.error)}</span><button data-action="dismiss-error" aria-label="关闭" title="关闭">×</button></div>` : ''}${canvasTabs}${view}</section></main>`
   installDragging()
   for (const [threadId, scrollTop] of cardScrollTops) {
     const answer = app.querySelector(`.thread-card[data-thread="${CSS.escape(threadId)}"] .thread-answer`)
@@ -908,6 +978,9 @@ app.addEventListener('pointerdown', event => {
 app.addEventListener('wheel', event => {
   const viewport = canvasViewport(event.target)
   if (!(viewport instanceof HTMLElement)) return
+  // While the user is actively wheeling, suppress full re-renders so a live
+  // refresh never yanks the viewport back mid-gesture.
+  state.wheelGestureUntil = Date.now() + 150
   const card = event.target instanceof Element ? event.target.closest('.thread-card') : null
   if (card instanceof HTMLElement) {
     // Over a card the wheel scrolls that card's own answer with the browser's
@@ -932,7 +1005,7 @@ app.addEventListener('click', async event => {
   if (!(button instanceof HTMLElement)) {
     const card = event.target instanceof Element ? event.target.closest('.thread-card[data-thread]:not(.draft-card)') : null
     if (!(card instanceof HTMLElement) || event.target instanceof Element && event.target.closest('.node-handle, textarea, select, form')) return
-    const thread = state.workspace?.threads.find(item => item.id === card.dataset.thread)
+    const thread = mapThreads().find(item => item.id === card.dataset.thread)
     if (thread === undefined) return
     state.activeId = thread.id
     state.error = ''
@@ -943,7 +1016,7 @@ app.addEventListener('click', async event => {
     if (thread.dshSessionId !== null) post('synapse:activate-session', { sessionId: thread.dshSessionId })
     return
   }
-  const thread = state.workspace?.threads.find(item => item.id === button.dataset.thread)
+  const thread = mapThreads().find(item => item.id === button.dataset.thread)
   try {
     if (button.dataset.action === 'close') post('synapse:close')
     if (button.dataset.action === 'toggle-sidebar') { state.sidebarCollapsed = !state.sidebarCollapsed; render() }
@@ -971,11 +1044,21 @@ app.addEventListener('click', async event => {
     if (button.dataset.action === 'toggle-message' && button.dataset.message !== undefined) { state.expandedMessageIds.has(button.dataset.message) ? state.expandedMessageIds.delete(button.dataset.message) : state.expandedMessageIds.add(button.dataset.message); renderPreservingDetailScroll() }
     if (button.dataset.action === 'open-dsh' && thread?.dshSessionId !== null) post('synapse:open-session', { sessionId: thread.dshSessionId })
     if (button.dataset.action === 'archive-thread' && thread !== undefined) await archiveThread(thread)
+    if (button.dataset.action === 'unload-session' && button.dataset.sessionId !== undefined) {
+      const title = button.dataset.sessionId
+      if (window.confirm(`卸载此会话地图？DSH 原会话会保留，可随时再次拖入。`)) unloadSession(button.dataset.sessionId)
+      void 0
+    }
+    if (button.dataset.action === 'clear-map') {
+      if (mapThreads().length === 0) return
+      if (!window.confirm('清空地图？将卸载所有已载入的会话（DSH 原会话全部保留）。')) return
+      for (const sessionId of [...state.loadedSessions.keys()]) unloadSession(sessionId)
+    }
     if (button.dataset.action === 'zoom-in') zoomCanvasAtCenter(.1)
     if (button.dataset.action === 'zoom-out') zoomCanvasAtCenter(-.1)
     if (button.dataset.action === 'focus-active') focusActiveCard()
     if (button.dataset.action === 'dismiss-error') { state.error = ''; render() }
-    if (button.dataset.action === 'layout' && state.workspace !== null) {
+    if (button.dataset.action === 'layout' && mapThreads().length > 0) {
       resetCardPositions()
       resetCanvasCamera()
       render()
@@ -983,30 +1066,81 @@ app.addEventListener('click', async event => {
   } catch (error) { setError(error) }
 })
 
+const mainStage = () => app.querySelector('.main-stage')
+
+const setDropTarget = active => {
+  const stage = mainStage()
+  if (stage instanceof HTMLElement) stage.classList.toggle('is-drag-target', active)
+}
+
+app.addEventListener('dragstart', event => {
+  const item = event.target instanceof Element ? event.target.closest('.session-item') : null
+  if (!(item instanceof HTMLElement) || item.dataset.sessionId === undefined) return
+  event.dataTransfer?.setData('text/plain', item.dataset.sessionId)
+  event.dataTransfer.effectAllowed = 'copy'
+  item.classList.add('dragging')
+  // Highlight the whole right map area as the drop zone.
+  setDropTarget(true)
+})
+
+app.addEventListener('dragend', event => {
+  const item = event.target instanceof Element ? event.target.closest('.session-item') : null
+  if (item instanceof HTMLElement) item.classList.remove('dragging')
+  setDropTarget(false)
+})
+
+app.addEventListener('dragover', event => {
+  const stage = event.target instanceof Element ? event.target.closest('.main-stage') : null
+  if (!(stage instanceof HTMLElement)) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+  stage.classList.add('is-drag-over')
+})
+
+app.addEventListener('dragleave', event => {
+  const stage = event.target instanceof Element ? event.target.closest('.main-stage') : null
+  if (stage instanceof HTMLElement) stage.classList.remove('is-drag-over')
+})
+
+app.addEventListener('drop', async event => {
+  const stage = event.target instanceof Element ? event.target.closest('.main-stage') : null
+  if (!(stage instanceof HTMLElement)) return
+  event.preventDefault()
+  stage.classList.remove('is-drag-over')
+  setDropTarget(false)
+  const sessionId = event.dataTransfer?.getData('text/plain')
+  if (typeof sessionId !== 'string' || sessionId === '') return
+  try {
+    const summary = sessionSummaryById(sessionId)
+    const thread = await loadSessionToMap(sessionId, summary)
+    if (thread === null) return
+    state.activeId = thread.id
+    state.error = ''
+    if (canReplaceView()) render()
+    if (thread.dshSessionId !== null) post('synapse:activate-session', { sessionId: thread.dshSessionId })
+  } catch (error) {
+    setError(error)
+  }
+})
+
 app.addEventListener('change', event => {
   const select = event.target.closest('[data-action="select-workspace"]')
   if (!(select instanceof HTMLSelectElement)) return
   const choice = workspaceChoices().find(item => item.id === select.value)
   if (choice?.source === 'dsh') {
-    // Map → native sync: switching workspaces moves DSH's current session to
-    // the workspace's most recently updated session, keeping both sides in step.
-    void openDshWorkspace(choice.id).then(opened => {
-      if (!opened) return
-      const threads = state.workspace?.threads ?? []
-      const latest = threads
-        .filter(thread => thread.dshSessionId !== null)
-        .sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')))[0]
-      const sessionId = latest?.dshSessionId ?? choice.sessionIds[0]
-      if (sessionId !== undefined) post('synapse:activate-session', { sessionId })
-    }).catch(setError)
-  } else if (choice !== undefined) { state.selectedDshWorkspaceId = null; void openWorkspace(choice.id).catch(setError) }
+    state.selectedDshWorkspaceId = choice.id
+    if (canReplaceView()) render()
+  } else if (choice !== undefined) {
+    state.selectedDshWorkspaceId = null
+    if (canReplaceView()) render()
+  }
 })
 app.addEventListener('input', event => { const input = event.target; if (input instanceof HTMLTextAreaElement && input.closest('[data-draft]') && state.draft !== null) state.draft.text = input.value })
 app.addEventListener('submit', event => {
   const form = event.target
   if (!(form instanceof HTMLFormElement)) return
   if (form.matches('[data-draft]')) { event.preventDefault(); void submitDraft(); return }
-  const thread = state.workspace?.threads.find(item => item.id === form.dataset.compose)
+  const thread = mapThreads().find(item => item.id === form.dataset.compose)
   const input = form.querySelector('textarea')
   if (thread === undefined || !(input instanceof HTMLTextAreaElement) || input.value.trim() === '') return
   event.preventDefault()
@@ -1019,40 +1153,68 @@ window.addEventListener('message', event => {
   if (event.origin !== window.location.origin || event.data?.source !== 'dsh-synapse') return
   const data = event.data
   if (data.type === 'synapse:map-opened') {
+    state.mapVisible = true
     resetCanvasCamera()
     state.mode = 'canvas'
     render()
     window.requestAnimationFrame(() => post('synapse:map-ready'))
-  }
-  if (data.type === 'synapse:workspaces') {
-    state.dshWorkspaces = Array.isArray(data.workspaces) ? data.workspaces.filter(workspace => typeof workspace?.id === 'string' && typeof workspace.title === 'string' && Array.isArray(workspace.sessionIds)) : []
-    const current = currentDshWorkspace()
-    if (current !== undefined && current.id !== state.selectedDshWorkspaceId) void openDshWorkspace(current.id).catch(setError)
-    else if (state.selectedDshWorkspaceId !== null) void openDshWorkspace(state.selectedDshWorkspaceId).catch(setError)
-    else if (canReplaceView()) render()
-  }
-  if (data.type === 'synapse:current-session') {
-    const previousId = state.currentDsh?.id
-    state.currentDsh = data.session
-    const thread = currentDshThread()
-    if (thread !== undefined) state.activeId = thread.id
-    if (previousId !== data.session?.id) void openCurrentWorkspace().then(opened => { if (!opened && canReplaceView()) render() }).catch(setError)
-    else if (canReplaceView()) render()
-  }
-  if (data.type === 'synapse:live-reply' && typeof data.sessionId === 'string') {
-    const thread = state.workspace?.threads.find(item => item.dshSessionId === data.sessionId)
-    if (thread !== undefined) {
-      if (data.running === true) state.liveReplies.set(data.sessionId, { running: true, text: typeof data.text === 'string' ? data.text : '' })
-      else state.liveReplies.delete(data.sessionId)
-      if (canReplaceView() || state.pendingReplies.has(data.sessionId)) scheduleLiveRender()
+    // Load the workspace graph only when the map is actually opened, not at
+    // DSH startup behind a hidden iframe.
+    if (!initialRefreshStarted) {
+      initialRefreshStarted = true
+      void refreshSummaries().catch(setError)
     }
   }
-  if (data.type === 'synapse:forked-session' || data.type === 'synapse:created-session' || data.type === 'synapse:message-sent') settleRpc(data.requestId, data.session ?? data)
+  if (data.type === 'synapse:map-closed') {
+    state.mapVisible = false
+  }
+  if (data.type === 'synapse:theme') {
+    const dark = data.dark === true
+    document.body.toggleAttribute('data-synapse-dark', dark)
+  }
+  if (data.type === 'synapse:workspaces') {
+    if (!state.mapVisible) return
+    state.dshWorkspaces = Array.isArray(data.workspaces) ? data.workspaces.filter(workspace => typeof workspace?.id === 'string' && typeof workspace.title === 'string' && Array.isArray(workspace.sessionIds)) : []
+    if (canReplaceView()) render()
+  }
+  if (data.type === 'synapse:current-session') {
+    if (!state.mapVisible) return
+    state.currentDsh = data.session
+    // Highlight the loaded map thread that matches the DSH current session,
+    // but never auto-load a session into the map — that is drag-only now.
+    const thread = currentDshThread()
+    if (thread !== undefined) state.activeId = thread.id
+    if (canReplaceView()) render()
+  }
+  if (data.type === 'synapse:live-reply' && typeof data.sessionId === 'string') {
+    const thread = mapThreads().find(item => item.dshSessionId === data.sessionId)
+    if (thread !== undefined) {
+      if (data.running === true) {
+        // Streaming output from another conversation must NOT rebuild the whole
+        // canvas every ~120ms — that is what causes the view to flash/jump while
+        // the user is scrolling or zooming. Keep the live text in state only;
+        // a single refresh happens when the turn actually finishes.
+        state.liveReplies.set(data.sessionId, { running: true, text: typeof data.text === 'string' ? data.text : '' })
+        return
+      }
+      state.liveReplies.delete(data.sessionId)
+      // A turn finished: refresh this loaded session's cached history so the
+      // finalized answer lands on the map without a manual re-drag.
+      if (state.loadedSessions.has(data.sessionId)) {
+        void loadSessionToMap(data.sessionId, sessionSummaryById(data.sessionId), null, true).then(() => {
+          if (canReplaceView()) render()
+        }).catch(() => {})
+      } else if (canReplaceView() || state.pendingReplies.has(data.sessionId)) {
+        scheduleLiveRender()
+      }
+    }
+  }
+  if (data.type === 'synapse:forked-session' || data.type === 'synapse:created-session' || data.type === 'synapse:message-sent' || data.type === 'synapse:history-loaded') settleRpc(data.requestId, data.session ?? data)
   if (data.type === 'synapse:bridge-error') { settleRpc(data.requestId, undefined, new Error(data.message)); if (data.requestId === undefined) setError(data.message) }
 })
 
+let initialRefreshStarted = false
 post('synapse:request-current')
-refreshSummaries().catch(setError)
 let polling = false
 let liveRenderTimer = 0
 function scheduleLiveRender() {
@@ -1063,10 +1225,101 @@ function scheduleLiveRender() {
   }, 120)
 }
 async function pollProjection() {
-  if (polling || document.hidden || !canReplaceView()) return
+  if (polling || !state.mapVisible || document.hidden || !canReplaceView()) return
   polling = true
   try {
     await refreshProjection()
   } finally { polling = false }
 }
-window.setInterval(() => { void pollProjection() }, 1_000)
+window.setInterval(() => { void pollProjection() }, 2_000)
+
+// ── Wallpaper Engine background mirror (lightweight) ─────────────
+// The Synapse page runs in a same-origin iframe, so it can read the wallpaper
+// plugin's persisted selection and serve the same inventory. This draws a
+// lightweight background layer (video/image/web) + scrim behind the map,
+// mirroring the native DSH wallpaper without pulling in the full React picker.
+const WALLPAPER_SETTINGS_KEY = 'dsh-wallpaper-engine:selection'
+const WALLPAPER_INVENTORY_URL = '/wallpaper-engine/inventory'
+const WALLPAPER_LAYER_ID = 'dsh-synapse-wallpaper-layer'
+const WALLPAPER_SCRIM_ID = 'dsh-synapse-wallpaper-scrim'
+
+let wallpaperInventory = null
+
+async function loadWallpaperInventory() {
+  if (wallpaperInventory !== null) return wallpaperInventory
+  try {
+    const res = await fetch(WALLPAPER_INVENTORY_URL, { cache: 'no-store' })
+    if (!res.ok) return null
+    wallpaperInventory = await res.json()
+    return wallpaperInventory
+  } catch { return null }
+}
+
+function wallpaperSelection() {
+  try {
+    const raw = localStorage.getItem(WALLPAPER_SETTINGS_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+
+function applySynapseWallpaper() {
+  const sel = wallpaperSelection()
+  const existingLayer = document.getElementById(WALLPAPER_LAYER_ID)
+  const existingScrim = document.getElementById(WALLPAPER_SCRIM_ID)
+  if (!sel?.id) {
+    existingLayer?.remove()
+    existingScrim?.remove()
+    document.body.removeAttribute('data-synapse-wallpaper')
+    return
+  }
+  void loadWallpaperInventory().then(inv => {
+    const wall = inv?.wallpapers?.find(w => w.id === sel.id)
+    if (!wall?.playable || !wall.media) return
+    const url = wall.media
+    const type = wall.type
+    let layer = document.getElementById(WALLPAPER_LAYER_ID)
+    if (!layer) {
+      layer = document.createElement('div')
+      layer.id = WALLPAPER_LAYER_ID
+      layer.className = 'synapse-wallpaper-layer'
+      // prepend as the first child of body; content sits above it via z-index.
+      document.body.prepend(layer)
+    }
+    const key = type + '\u0000' + url
+    if (layer.dataset.weKey !== key) {
+      layer.innerHTML = ''
+      const media = type === 'video' ? document.createElement('video')
+        : type === 'image' ? document.createElement('img')
+        : document.createElement('iframe')
+      media.src = url
+      media.className = 'synapse-wallpaper-media'
+      if (type === 'video') { media.autoplay = true; media.loop = true; media.muted = true; media.setAttribute('playsinline', '') }
+      if (type === 'image') { media.alt = ''; media.draggable = false }
+      if (type !== 'video' && type !== 'image') { media.setAttribute('frameborder', '0'); media.setAttribute('scrolling', 'no') }
+      layer.appendChild(media)
+      layer.dataset.weKey = key
+    }
+    let scrim = document.getElementById(WALLPAPER_SCRIM_ID)
+    if (!scrim) {
+      scrim = document.createElement('div')
+      scrim.id = WALLPAPER_SCRIM_ID
+      scrim.className = 'synapse-wallpaper-scrim'
+      document.body.appendChild(scrim)
+    }
+    const scrimAlpha = typeof sel.scrim === 'number' ? sel.scrim : 0.25
+    scrim.style.background = `rgba(0,0,0,${scrimAlpha})`
+    const blur = typeof sel.blur === 'number' ? sel.blur : 16
+    document.body.style.setProperty('--synapse-we-blur', blur + 'px')
+    document.body.style.setProperty('--synapse-we-wallpaper-blur', (typeof sel.wallpaperBlur === 'number' ? sel.wallpaperBlur : 0) + 'px')
+    document.body.style.setProperty('--synapse-we-flip', sel.flip ? '-1' : '1')
+    // Mirror the native plugin's saturation curve: 1.15 + blur*0.028.
+    document.body.style.setProperty('--synapse-we-saturate', String(1.15 + blur * 0.028))
+    document.body.style.setProperty('--synapse-we-glass-brightness', '1.04')
+    document.body.setAttribute('data-synapse-wallpaper', 'on')
+  }).catch(() => {})
+}
+
+applySynapseWallpaper()
+window.addEventListener('storage', event => {
+  if (event.key === WALLPAPER_SETTINGS_KEY) applySynapseWallpaper()
+})
