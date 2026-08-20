@@ -929,11 +929,22 @@ app.addEventListener('wheel', event => {
   zoomCanvas(viewport, state.zoom + (event.deltaY < 0 ? .05 : -.05), event.clientX, event.clientY)
 }, { passive: false })
 
+// Track pointer-down so the card click handler can tell a plain click from a
+// text-selection or drag gesture; acting on the latter would re-render and
+// wipe the user's selection.
+let pointerDownPosition = null
+app.addEventListener('pointerdown', event => { pointerDownPosition = { x: event.clientX, y: event.clientY } })
+
 app.addEventListener('click', async event => {
   const button = event.target.closest('[data-action]')
   if (!(button instanceof HTMLElement)) {
     const card = event.target instanceof Element ? event.target.closest('.thread-card[data-thread]:not(.draft-card)') : null
     if (!(card instanceof HTMLElement) || event.target instanceof Element && event.target.closest('.node-handle, textarea, select, form')) return
+    // A double-click selects a word and a drag selects a range; neither is a
+    // select-click, so leave the selection intact instead of re-rendering.
+    if (event.detail > 1) return
+    if (pointerDownPosition !== null
+      && Math.hypot(event.clientX - pointerDownPosition.x, event.clientY - pointerDownPosition.y) > 4) return
     const thread = state.workspace?.threads.find(item => item.id === card.dataset.thread)
     if (thread === undefined) return
     state.activeId = thread.id

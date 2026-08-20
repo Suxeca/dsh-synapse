@@ -123,3 +123,12 @@ test('mirrors DSH theme changes into the map', async () => {
   assert.match(appSource, /data\.type === 'synapse:theme'/)
   assert.match(appSource, /document\.documentElement\.dataset\.theme/)
 })
+
+test('leaves text selections inside cards intact', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const cardClick = source.slice(source.indexOf('if (!(button instanceof HTMLElement)) {'), source.indexOf("if (button.dataset.action === 'close')"))
+
+  assert.match(cardClick, /event\.detail > 1/)
+  assert.match(cardClick, /Math\.hypot/)
+  assert.match(source, /pointerDownPosition = \{ x: event\.clientX/)
+})
