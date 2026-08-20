@@ -1024,6 +1024,9 @@ window.addEventListener('message', event => {
     render()
     window.requestAnimationFrame(() => post('synapse:map-ready'))
   }
+  if (data.type === 'synapse:theme') {
+    document.documentElement.dataset.theme = data.dark === true ? 'dark' : 'light'
+  }
   if (data.type === 'synapse:workspaces') {
     state.dshWorkspaces = Array.isArray(data.workspaces) ? data.workspaces.filter(workspace => typeof workspace?.id === 'string' && typeof workspace.title === 'string' && Array.isArray(workspace.sessionIds)) : []
     const current = currentDshWorkspace()

@@ -209,3 +209,123 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .compare-notes p { margin: 0; padding: 11px 0; border-top: 1px solid #eef2f5; color: #475569; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
 @media (max-width: 760px) { .synapse-shell { --sidebar-width: 200px; --sidebar-half: 100px; } .synapse-shell.sidebar-collapsed { --sidebar-width: 56px; --sidebar-half: 28px; } .sidebar { padding: 6px 10px; } .detail-head { display: grid; gap: 12px; padding: 22px 18px 14px; } .detail-scroll { padding: 16px 18px 20px; } .message-composer { padding: 12px 18px 16px; } .message-user { max-width: 92%; } .compare-view { padding: 26px 18px; } .compare-columns { grid-template-columns: 1fr; } .topbar { padding: 0 10px; } .brand strong { display: none; } }
 @media (max-width: 560px) { .synapse-shell { min-width: 0; grid-template-columns: 1fr; } .sidebar { display: none; } .topbar, .main-stage { grid-column: 1; } .view-switch { left: 50%; } .view-switch button { padding: 0 7px; } .top-actions > button { font-size: 11px; padding: 0 7px; } .thread-card { width: 280px; } }
+
+/* ── Dark theme: follows DSH's body[data-ds-dark-theme] via synapse:theme ── */
+[data-theme="dark"] { color-scheme: dark; }
+[data-theme="dark"] body { background: #0f1115; color: #e6e8eb; }
+[data-theme="dark"] .synapse-shell { background: #0f1115; }
+[data-theme="dark"] .sidebar { border-right-color: #26282d; background: #15171b; }
+[data-theme="dark"] .topbar { background: #15171b; }
+[data-theme="dark"] .main-stage { background: #0f1115; }
+[data-theme="dark"] .canvas-tabs { border-bottom-color: #26282d; background: #15171b; }
+[data-theme="dark"] .canvas-tabs button { color: #8f959e; }
+[data-theme="dark"] .canvas-tabs button.active, [data-theme="dark"] .canvas-tabs button:hover { color: #5b8def; border-bottom-color: #5b8def; }
+[data-theme="dark"] .canvas-viewport { background: #0f1115; }
+[data-theme="dark"] .canvas-content { background: #0f1115; }
+[data-theme="dark"] .connectors path { stroke: #3a3f47; }
+[data-theme="dark"] .connectors .draft-connector { stroke: #5b8def; }
+[data-theme="dark"] .thread-card { border-color: #2a2d33; background: #1b1c1f; box-shadow: 0 3px 11px rgba(0,0,0,.35); }
+[data-theme="dark"] .thread-card:hover { border-color: #4a4f57; box-shadow: 0 8px 20px rgba(0,0,0,.45); }
+[data-theme="dark"] .thread-card.active { outline-color: rgba(255,255,255,.25); border-color: #6b7280; }
+[data-theme="dark"] .thread-card.selected { box-shadow: 0 0 0 2px rgba(91,141,239,.4), 0 8px 20px rgba(0,0,0,.45); }
+[data-theme="dark"] .node-handle { border-color: #2a2d33; background: #1b1c1f; }
+[data-theme="dark"] .node-handle::after { color: #737a83; }
+[data-theme="dark"] .thread-title { color: #e6e8eb; }
+[data-theme="dark"] .thread-title:hover { color: #fff; }
+[data-theme="dark"] .branch-button { border-color: #4a4f57; background: #1b1c1f; color: #e6e8eb; }
+[data-theme="dark"] .branch-button:hover { border-color: #9ca3af; background: #26282d; }
+[data-theme="dark"] .thread-meta { color: #737a83; }
+[data-theme="dark"] .thread-answer { color: #a7adb5; }
+[data-theme="dark"] .thread-answer h1, [data-theme="dark"] .thread-answer h2, [data-theme="dark"] .thread-answer h3 { color: #d7dae0; }
+[data-theme="dark"] .thread-answer code { background: #26282d; color: #d7dae0; }
+[data-theme="dark"] .thread-answer pre { border-color: #2a2d33; background: #15171b; }
+[data-theme="dark"] .thread-answer th, [data-theme="dark"] .thread-answer td { border-color: #2a2d33; }
+[data-theme="dark"] .thread-answer th { background: #222428; }
+[data-theme="dark"] .thread-answer-empty { color: #737a83; }
+[data-theme="dark"] .thread-answer-pending, [data-theme="dark"] .message-pending p { color: #a7adb5; }
+[data-theme="dark"] .thread-card footer { border-top-color: #23262b; }
+[data-theme="dark"] .thread-card footer button { color: #a7adb5; }
+[data-theme="dark"] .thread-card footer button:hover { background: #26282d; color: #e6e8eb; }
+[data-theme="dark"] .thread-card footer .compare-button { color: #d7dae0; }
+[data-theme="dark"] .thread-card footer .compare-button.selected { background: #2a2d33; color: #fff; }
+[data-theme="dark"] .draft-card { border-color: #4a4f57; box-shadow: 0 7px 19px rgba(0,0,0,.4); }
+[data-theme="dark"] .draft-card strong { color: #e6e8eb; }
+[data-theme="dark"] .draft-branch-form textarea { border-color: #2a2d33; background: #15171b; color: #e6e8eb; }
+[data-theme="dark"] .draft-actions button { background: #1b1c1f; color: #a7adb5; }
+[data-theme="dark"] .draft-actions button.primary { background: #3478f6; color: #fff; }
+[data-theme="dark"] .view-switch { border-color: #2a2d33; background: rgba(21,23,27,.96); }
+[data-theme="dark"] .view-switch button { color: #8f959e; }
+[data-theme="dark"] .view-switch button:hover { background: #26282d; color: #e6e8eb; }
+[data-theme="dark"] .view-switch button.active { background: #e6e8eb; color: #111317; }
+[data-theme="dark"] .canvas-controls span { color: #8f959e; }
+[data-theme="dark"] .sidebar-toggle { color: #a7adb5; }
+[data-theme="dark"] .sidebar-toggle:hover { background: #26282d; color: #e6e8eb; }
+[data-theme="dark"] .new-workspace { border-color: rgba(255,255,255,.12); background: #1b1c1f; color: #e6e8eb; }
+[data-theme="dark"] .new-workspace:hover { border-color: rgba(255,255,255,.22); background: #222428; color: #fff; }
+[data-theme="dark"] .workspace-label, [data-theme="dark"] .sidebar-heading { color: #8f959e; }
+[data-theme="dark"] .workspace-label select { border-color: #2a2d33; background: #15171b; color: #e6e8eb; }
+[data-theme="dark"] .workspace-select svg { stroke: #8f959e; }
+[data-theme="dark"] .tree-row { color: #a7adb5; }
+[data-theme="dark"] .tree-row:hover { background: #26282d; }
+[data-theme="dark"] .tree-row.active { background: #2a2d33; color: #e6e8eb; }
+[data-theme="dark"] .tree-row i { color: #737a83; }
+[data-theme="dark"] .tree-empty { color: #737a83; }
+[data-theme="dark"] .brand::after { background: #e6e8eb; color: #111317; }
+[data-theme="dark"] .empty-canvas strong { color: #d7dae0; }
+[data-theme="dark"] .empty-canvas p { color: #8f959e; }
+[data-theme="dark"] .note-empty { border-color: #2a2d33; color: #8f959e; }
+[data-theme="dark"] .status-message { border-color: #7a2e2e; background: #2b1a1c; color: #f0a3a3; box-shadow: 0 3px 10px rgba(0,0,0,.4); }
+[data-theme="dark"] .status-message button { color: #f0a3a3; }
+[data-theme="dark"] .status-message button:hover { background: #3a2326; }
+[data-theme="dark"] .detail-view { background: #0f1115; }
+[data-theme="dark"] .detail-head { border-bottom-color: #26282d; }
+[data-theme="dark"] .detail-badge { background: #1e2a44; color: #7ea6f5; }
+[data-theme="dark"] .detail-subtitle { color: #737a83; }
+[data-theme="dark"] .detail-head h1 { color: #e6e8eb; }
+[data-theme="dark"] .detail-head-actions button { border-color: #2a2d33; background: #15171b; color: #c6cbd2; }
+[data-theme="dark"] .detail-head-actions button:hover { border-color: #4a4f57; background: #222428; }
+[data-theme="dark"] .detail-head-actions button.primary { border-color: #3478f6; background: #3478f6; color: #fff; }
+[data-theme="dark"] .detail-head-actions button.primary:hover { background: #2563eb; }
+[data-theme="dark"] .message { border-color: #2a2d33; background: #1b1c1f; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+[data-theme="dark"] .message header { color: #a7adb5; }
+[data-theme="dark"] .message time { color: #737a83; }
+[data-theme="dark"] .message-role { color: #d7dae0; }
+[data-theme="dark"] .message-user { border-color: transparent; background: #1e2a45; box-shadow: none; }
+[data-theme="dark"] .message-user header { color: #8fa9d9; }
+[data-theme="dark"] .message-user .message-body p { color: #c9d4ea; }
+[data-theme="dark"] .message-error { border-left-color: #dc2626; background: #2b1a1c; }
+[data-theme="dark"] .message-collapsible.expanded { box-shadow: 0 2px 10px rgba(0,0,0,.35); }
+[data-theme="dark"] .message-body p { color: #d7dae0; }
+[data-theme="dark"] .message-body h1, [data-theme="dark"] .message-body h2, [data-theme="dark"] .message-body h3 { color: #e6e8eb; }
+[data-theme="dark"] .message-body blockquote { border-left-color: #3a3f47; color: #8f959e; }
+[data-theme="dark"] .message-body code { background: #26282d; color: #d7dae0; }
+[data-theme="dark"] .message-body pre { border-color: #2a2d33; background: #15171b; }
+[data-theme="dark"] .message-body pre code { background: transparent; }
+[data-theme="dark"] .message-body th, [data-theme="dark"] .message-body td { border-color: #2a2d33; }
+[data-theme="dark"] .message-body th { background: #222428; }
+[data-theme="dark"] .message-branch { color: #8f959e; }
+[data-theme="dark"] .message-branch:hover { background: #1e2a44; color: #7ea6f5; }
+[data-theme="dark"] .message-fold { color: #737a83; }
+[data-theme="dark"] .message-fold:hover { background: #1e2a44 !important; color: #7ea6f5 !important; }
+[data-theme="dark"] .message-summary { color: #8f959e !important; }
+[data-theme="dark"] .message-streaming { color: #8f959e !important; }
+[data-theme="dark"] .streaming-dot { background: #737a83; }
+[data-theme="dark"] .process-records { border-top-color: #2a2d33; }
+[data-theme="dark"] .process-records-fold { background: #222428; color: #a7adb5; }
+[data-theme="dark"] .process-records-fold:hover { background: #1e2a44; color: #7ea6f5; }
+[data-theme="dark"] .process-count { background: #2a2d33; color: #8f959e; }
+[data-theme="dark"] .process-entry { border-color: #2a2d33; background: #15171b; }
+[data-theme="dark"] .process-entry-fold { color: #d7dae0; }
+[data-theme="dark"] .process-entry-fold:hover { background: #222428; }
+[data-theme="dark"] .process-status-done { color: #34d399; }
+[data-theme="dark"] .process-status-pending { color: #fbbf24; }
+[data-theme="dark"] .process-status-error { color: #f87171; }
+[data-theme="dark"] .process-args, [data-theme="dark"] .process-result { background: #222428; color: #d7dae0; }
+[data-theme="dark"] .process-error { background: #2b1a1c; color: #f0a3a3; }
+[data-theme="dark"] .message-composer { border-top-color: #26282d; background: #0f1115; }
+[data-theme="dark"] .message-composer textarea { border-color: #2a2d33; background: #15171b; color: #e6e8eb; box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+[data-theme="dark"] .message-composer button:disabled { background: #2a2d33; color: #737a83; }
+[data-theme="dark"] button { border-color: #2a2d33; background: #1b1c1f; color: #d7dae0; }
+[data-theme="dark"] button:hover { border-color: #4a4f57; background: #26282d; color: #fff; }
+[data-theme="dark"] button.primary { border-color: #3478f6; background: #3478f6; color: #fff; }
+[data-theme="dark"] button.primary:hover { border-color: #2563eb; background: #2563eb; color: #fff; }

@@ -111,3 +111,13 @@ test('switching workspaces syncs DSH to the most recently updated session', asyn
   assert.match(select, /updatedAt/)
   assert.match(select, /post\('synapse:activate-session'/)
 })
+
+test('mirrors DSH theme changes into the map', async () => {
+  const clientSource = await readFile(new URL('../client.js', import.meta.url), 'utf8')
+  const appSource = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+
+  assert.match(clientSource, /data-ds-dark-theme/)
+  assert.match(clientSource, /synapse:theme/)
+  assert.match(appSource, /data\.type === 'synapse:theme'/)
+  assert.match(appSource, /document\.documentElement\.dataset\.theme/)
+})
