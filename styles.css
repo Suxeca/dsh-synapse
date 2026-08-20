@@ -69,7 +69,7 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .canvas-view { display: flex; min-height: 0; flex: 1; }
 .canvas-viewport { position: relative; width: 100%; height: 100%; min-height: 0; flex: 1; overflow: hidden; background: #fff; cursor: grab; }
 .canvas-viewport.is-panning { cursor: grabbing; user-select: none; }
-.canvas-content { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
+.canvas-content { position: absolute; inset: 0; transform-origin: 0 0; }
 .connectors { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .connectors path { fill: none; stroke: #aebbc9; stroke-width: 1.5; }
 .connectors .draft-connector { stroke: #3478f6; stroke-dasharray: 5 4; }
