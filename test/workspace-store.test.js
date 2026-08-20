@@ -213,54 +213,12 @@ test('archived canvas nodes stay hidden during a later DSH session sync', async 
   assert.equal((await store.list()).length, 0)
 })
 
-test('DSH-archived sessions never become canvas nodes and are pruned when already present', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'dsh-synapse-dsh-archive-sync-'))
-  const store = new WorkspaceStore(join(directory, 'state.json'))
-  const session = { id: 'dsh-archived', title: '原生归档', cwd: 'C:\\work\\dsh-archive', blank: false }
-  // First sync without the archive set: the session becomes a node.
-  await store.syncSessions([session])
-  assert.equal((await store.list()).length, 1)
-  // A later DSH archive reports the id; the node must be pruned and not re-created.
-  await store.syncSessions([session], [], ['dsh-archived'])
-  assert.equal((await store.list()).length, 0)
-  // The archive mirror is persisted: even a fresh sync that still lists the
-  // session must keep it off the canvas.
-  await store.syncSessions([session], [], ['dsh-archived'])
-  assert.equal((await store.list()).length, 0)
-})
-
-test('projection skips sessions archived natively in DSH', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'dsh-synapse-dsh-archive-proj-'))
-  const store = new WorkspaceStore(join(directory, 'state.json'))
-  await store.syncSessions([], [], ['proj-archived'])
-  const session = { id: 'proj-archived', header: { meta: { cwd: 'C:\\work\\proj' } }, firstLiveSeq: 0, events: [] }
-  await store.projectSession(session)
-  assert.equal((await store.list()).length, 0)
-})
-
-test('drag-only mode never creates server projection threads and cleans legacy DSH workspaces', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'dsh-synapse-dragonly-'))
-  const store = new WorkspaceStore(join(directory, 'state.json'), false)
-  const session = { id: 'drag-only', title: '只拖入', cwd: 'C:\\work\\drag', blank: false }
-  // syncSessions must not create any thread in drag-only mode.
-  await store.syncSessions([session])
-  assert.equal((await store.list()).length, 0)
-  // Legacy auto-projected DSH workspaces are cleaned up on the next sync.
-  const legacy = new WorkspaceStore(join(directory, 'state.json'))
-  await legacy.syncSessions([{ id: 'legacy', title: '旧', cwd: 'C:\\work\\legacy', blank: false }])
-  assert.equal((await legacy.list()).length, 1)
-  const dragOnly = new WorkspaceStore(join(directory, 'state.json'), false)
-  await dragOnly.syncSessions([{ id: 'legacy', title: '旧', cwd: 'C:\\work\\legacy', blank: false }])
-  assert.equal((await dragOnly.list()).length, 0)
-})
-
 test('does not rewrite an up-to-date v4 file on load', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-synapse-idempotent-'))
   const dataFile = join(directory, 'state.json')
   const state = {
     version: 4,
     hiddenSessionIds: [],
-    dsArchivedSessionIds: [],
     workspaces: [{
       id: 'w-1', kind: 'dsh', cwd: 'C:\\work\\x', title: 'x',
       createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',

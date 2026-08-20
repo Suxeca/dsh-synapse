@@ -19,12 +19,10 @@ window.__ModuleLoader__.load({
     const workspaceSnapshot = ctx => {
       const sessions = ctx.sessions.list.getSnapshot()
       const snapshot = ctx.workspaces.list.getSnapshot()
-      const byId = sessions.byId
       const accounted = new Set(snapshot.items.flatMap(workspace => workspace.sessionIds))
-      const toSession = id => ({ id, title: byId[id]?.displayTitle ?? byId[id]?.title ?? null, cwd: byId[id]?.cwd ?? null, blank: byId[id]?.blank ?? false })
       return [
-        ...snapshot.items.map(workspace => ({ id: workspace.workspaceId, title: workspace.title, path: workspace.path, sessionIds: workspace.sessionIds, sessions: workspace.sessionIds.map(toSession) })),
-        { id: 'dsh-ungrouped', title: '未分组', path: null, sessionIds: sessions.ids.filter(id => !accounted.has(id)), sessions: sessions.ids.filter(id => !accounted.has(id)).map(toSession) },
+        ...snapshot.items.map(workspace => ({ id: workspace.workspaceId, title: workspace.title, path: workspace.path, sessionIds: workspace.sessionIds })),
+        { id: 'dsh-ungrouped', title: '未分组', path: null, sessionIds: sessions.ids.filter(id => !accounted.has(id)) },
       ]
     }
 
@@ -36,66 +34,6 @@ window.__ModuleLoader__.load({
         if (session === undefined) throw new Error('关联的 DSH 会话已不可用')
         const result = await session.prompt([{ type: 'text', text }], 'queue')
         if (!result.ok) throw new Error(result.error?.message ?? 'DSH 未接受这条消息')
-      }
-      const historyText = blocks => {
-        if (!Array.isArray(blocks)) return ''
-        return blocks
-          .filter(block => block?.type === 'text' && typeof block.text === 'string')
-          .map(block => block.text)
-          .filter(Boolean)
-          .join('\n')
-      }
-      const assistantText = blocks => {
-        if (!Array.isArray(blocks)) return ''
-        return blocks
-          .filter(block => block?.kind === 'text' && typeof block.text === 'string')
-          .map(block => block.text)
-          .filter(Boolean)
-          .join('\n')
-      }
-      const messagesFromNodes = nodes => {
-        if (!Array.isArray(nodes)) return []
-        return nodes.flatMap(node => {
-          if (node?.kind === 'user') {
-            const text = historyText(node.content)
-            if (text.trimStart().startsWith('Current runtime context. This snapshot supersedes earlier runtime-context snapshots.')) return []
-            return text.trim() === '' ? [] : [{ kind: 'user', text: text.slice(0, 10_000), at: node.time, sourceSeq: node.seq }]
-          }
-          if (node?.kind === 'assistant') {
-            const text = assistantText(node.blocks)
-            return text.trim() === '' ? [] : [{ kind: 'assistant', text: text.slice(0, 10_000), at: node.time, sourceSeq: node.seq }]
-          }
-          if (node?.kind === 'turn-error') {
-            return [{ kind: 'error', text: String(node.message ?? '').slice(0, 10_000), at: node.time, sourceSeq: node.seq }]
-          }
-          return []
-        })
-      }
-      const loadHistory = async sessionId => {
-        // Resolve the Session instance without staging it as current: the
-        // concrete object exposes open() (the SessionFace type hides it), so
-        // bulk history loading never changes DSH's current selection.
-        const scope = ctx.sessions.scope(sessionId)
-        const session = scope === undefined ? undefined : ctx.sessions.sessionOf(scope)
-        if (session === undefined) throw new Error('DSH 会话历史暂不可用')
-        if (typeof session.open === 'function') await session.open()
-        const deadline = Date.now() + 10_000
-        while (Date.now() < deadline) {
-          const snapshot = session.getSnapshot()
-          if (snapshot.openState === 'open') break
-          if (snapshot.openState === 'error') throw new Error(snapshot.openError?.message ?? 'DSH 会话历史加载失败')
-          await new Promise(resolve => setTimeout(resolve, 50))
-        }
-        let snapshot = session.getSnapshot()
-        if (snapshot.openState !== 'open') throw new Error('DSH 会话历史打开超时')
-        // Page backward through the full log (PAGE_MESSAGES=50 per page).
-        let pages = 0
-        while (snapshot.hasMore && pages < 100) {
-          await session.loadOlder()
-          snapshot = session.getSnapshot()
-          pages++
-        }
-        return messagesFromNodes(snapshot.nodes)
       }
       const style = document.createElement('style')
       style.textContent = '.dsh-synapse-switch{position:fixed;z-index:80;top:12px;left:50%;display:flex;gap:2px;transform:translateX(-50%);border:1px solid #d1d5db;border-radius:999px;background:rgba(255,255,255,.96);padding:3px;backdrop-filter:blur(10px)}.dsh-synapse-switch button{height:28px;border:0;border-radius:999px;background:transparent;padding:0 11px;color:#6b7280;font:600 12px Inter,system-ui,sans-serif;cursor:pointer;white-space:nowrap}.dsh-synapse-switch button:hover{background:#f3f4f6;color:#111827}.dsh-synapse-switch button.active{background:#111827;color:#fff}.dsh-synapse-switch button:focus-visible{outline:2px solid #111827;outline-offset:2px}.dsh-synapse-overlay{position:fixed;z-index:100;inset:0;background:#f5f7fa}.dsh-synapse-overlay.is-opening{visibility:hidden}.dsh-synapse-overlay[hidden]{display:none}.dsh-synapse-overlay iframe{display:block;width:100%;height:100%;border:0}'
@@ -116,25 +54,12 @@ window.__ModuleLoader__.load({
         mapButton.classList.toggle('active', showingMap)
         mapButton.setAttribute('aria-pressed', String(showingMap))
       }
-      const unsubscribeLiveSessions = () => {
-        for (const [id, unsubscribe] of liveUnsubscribers) {
-          unsubscribe()
-          liveUnsubscribers.delete(id)
-        }
-      }
       const close = () => {
         window.clearTimeout(mapOpenFallback)
         mapOpening = false
-        document.body.classList.remove('dsh-synapse-map-open')
         overlay.classList.remove('is-opening')
         overlay.hidden = true
         setView('dialog')
-        // Tell the hidden map to pause polling/rendering so switching back to
-        // the native dialog does not fight the main page for CPU/network.
-        send('synapse:map-closed')
-        // Drop per-session live subscriptions while the map is hidden; they
-        // are re-created on the next open via syncCurrentSession -> syncLiveSessions.
-        unsubscribeLiveSessions()
       }
       const send = (type, payload) => { frame.contentWindow?.postMessage({ source: 'dsh-synapse', type, ...payload }, location.origin) }
       let syncQueued = false
@@ -167,21 +92,12 @@ window.__ModuleLoader__.load({
           const sessionIds = new Set(sessions.map(session => session.id))
           const removedSessionIds = [...knownSessionIds].filter(id => !sessionIds.has(id))
           knownSessionIds = sessionIds
-          // DSH-native archive set: the workspace registry hides these sessions
-          // from grouping; mirror it server-side so archived conversations
-          // never become (or remain) canvas nodes.
-          const archivedSessionIds = ctx.workspaces.list.getSnapshot().archivedSessionIds ?? []
-          void fetch('/synapse/api/sessions/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessions, removedSessionIds, archivedSessionIds }) }).catch(() => {})
+          void fetch('/synapse/api/sessions/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessions, removedSessionIds }) }).catch(() => {})
         })
-      }
-      const syncTheme = () => {
-        const dark = typeof document !== 'undefined' && document.body?.hasAttribute?.('data-ds-dark-theme') === true
-        send('synapse:theme', { dark })
       }
       const syncCurrentSession = () => {
         syncSessions()
         syncLiveSessions()
-        syncTheme()
         if (!overlay.hidden) {
           send('synapse:workspaces', { workspaces: workspaceSnapshot(ctx) })
           send('synapse:current-session', { session: currentSession(ctx) })
@@ -199,7 +115,6 @@ window.__ModuleLoader__.load({
       const open = () => {
         window.clearTimeout(mapOpenFallback)
         mapOpening = true
-        document.body.classList.add('dsh-synapse-map-open')
         setView('map')
         // Keep the iframe laid out while hidden so its canvas can receive a
         // real scroll offset. display:none would clamp scrollTop back to zero.
@@ -261,24 +176,8 @@ window.__ModuleLoader__.load({
             send('synapse:created-session', { requestId: event.data.requestId, session: { id, title: snapshot.byId[id]?.displayTitle ?? '新会话', cwd: snapshot.byId[id]?.cwd ?? cwd ?? null } })
           }).catch(() => { send('synapse:bridge-error', { requestId: event.data.requestId, message: 'DSH 会话创建失败，请先在 DSH 选择工作目录' }) })
         }
-        if (event.data.type === 'synapse:load-history') {
-          const sessionId = typeof event.data.sessionId === 'string' ? event.data.sessionId : ''
-          if (sessionId === '') return send('synapse:bridge-error', { requestId: event.data.requestId, message: '会话 id 无效' })
-          loadHistory(sessionId).then(messages => {
-            send('synapse:history-loaded', { requestId: event.data.requestId, sessionId, messages })
-          }).catch(error => {
-            send('synapse:bridge-error', { requestId: event.data.requestId, message: error instanceof Error ? error.message : 'DSH 会话历史加载失败' })
-          })
-          return
-        }
       }
       const onKeyDown = event => { if (event.key === 'Escape' && !overlay.hidden) close() }
-      const themeObserver = typeof MutationObserver === 'undefined'
-        ? null
-        : new MutationObserver(() => syncTheme())
-      if (themeObserver !== null && document.body) {
-        themeObserver.observe(document.body, { attributes: true, attributeFilter: ['data-ds-dark-theme'] })
-      }
       const unsubscribeSessions = ctx.sessions.list.subscribe(syncCurrentSession)
       const unsubscribeWorkspaces = ctx.workspaces.list.subscribe(syncCurrentSession)
       dialogButton.addEventListener('click', close)
@@ -292,7 +191,6 @@ window.__ModuleLoader__.load({
         frame.removeEventListener('load', onFrameLoad)
         window.removeEventListener('message', onMessage)
         window.removeEventListener('keydown', onKeyDown)
-        themeObserver?.disconnect()
         unsubscribeSessions()
         unsubscribeWorkspaces()
         for (const unsubscribe of liveUnsubscribers.values()) unsubscribe()
