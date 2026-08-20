@@ -43,6 +43,8 @@ test('preserves each card answer scroll across canvas re-renders', async () => {
   const render = source.slice(source.indexOf('function render() {'), source.indexOf('function renderPreservingDetailScroll'))
 
   assert.match(render, /cardScrollTops/)
+  assert.match(render, /card\.dataset\.cardId/)
+  assert.match(render, /\.thread-card\[data-card-id=/)
   assert.match(render, /\.thread-answer`\)\s*if \(answer instanceof HTMLElement\) answer\.scrollTop = scrollTop/)
 })
 
