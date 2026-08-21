@@ -77,7 +77,14 @@ function removeCardNote(cardId) {
 
 function normalizeTurnText(text) {
   if (typeof text !== 'string') return ''
-  return text.trim().replace(/\r\n/g, '\n').replace(/\s+/g, ' ')
+  let cleaned = text.trim()
+  cleaned = cleaned.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '').trim()
+  cleaned = cleaned.replace(/<system-instructions>[\s\S]*?<\/system-instructions>/gi, '').trim()
+  cleaned = cleaned.replace(/<context>[\s\S]*?<\/context>/gi, '').trim()
+  cleaned = cleaned.replace(/^Current runtime context[\s\S]*?(\n\n|$)/gi, '').trim()
+  cleaned = cleaned.replace(/^The following workspace instructions may be relevant[\s\S]*?(\n\n|$)/gi, '').trim()
+  cleaned = cleaned.replace(/^# AGENTS\.md[\s\S]*?(\n\n|$)/gi, '').trim()
+  return cleaned.replace(/\r\n/g, '\n').replace(/\s+/g, ' ')
 }
 
 function sessionUserTurns(messages) {
@@ -111,8 +118,12 @@ async function repairWorkspaceSessionConnections() {
     let resolvedAnchorCardId = null
     let resolvedSeedLength = Number.isSafeInteger(thread.sourceSeedLength) ? thread.sourceSeedLength : null
 
+    const ownUpdatedAt = String(thread.updatedAt ?? '')
+    const ownCreatedAt = String(thread.createdAt ?? '')
+
     // Strategy 1 (Highest priority): Find best context match based on user dialogue turns
     let bestContextParent = null
+    let bestScore = -Infinity
     let bestMatchCount = 0
     let bestForkParentTurn = null
     let bestFirstOwnTurn = null
@@ -121,6 +132,8 @@ async function repairWorkspaceSessionConnections() {
       if (other.id === thread.id) continue
       const otherTurns = sessionUserTurns(other.messages ?? [])
       if (otherTurns.length === 0) continue
+      const otherUpdatedAt = String(other.updatedAt ?? '')
+      const otherCreatedAt = String(other.createdAt ?? '')
 
       let matchCount = 0
       while (matchCount < ownTurns.length && matchCount < otherTurns.length) {
@@ -131,12 +144,21 @@ async function repairWorkspaceSessionConnections() {
         }
       }
 
-      if (matchCount > 0 && matchCount > bestMatchCount) {
-        if (matchCount < ownTurns.length || otherTurns.length <= ownTurns.length) {
-          bestMatchCount = matchCount
-          bestContextParent = other
-          bestForkParentTurn = otherTurns[matchCount - 1]
-          bestFirstOwnTurn = ownTurns[matchCount]
+      if (matchCount > 0) {
+        const isOtherExactPrefix = otherTurns.length === matchCount && ownTurns.length > matchCount
+        const isDivergence = matchCount < ownTurns.length && matchCount < otherTurns.length
+        const isOtherEarlier = otherCreatedAt <= ownCreatedAt || thread.parentId === other.id
+
+        if (isOtherExactPrefix || (isDivergence && isOtherEarlier)) {
+          const score = matchCount * 10000 + (isOtherExactPrefix ? 2000 : 0) + (thread.parentId === other.id ? 500 : 0) - otherTurns.length
+
+          if (score > bestScore) {
+            bestScore = score
+            bestMatchCount = matchCount
+            bestContextParent = other
+            bestForkParentTurn = otherTurns[matchCount - 1]
+            bestFirstOwnTurn = ownTurns[matchCount]
+          }
         }
       }
     }
@@ -867,9 +889,11 @@ function conversationCards(threads) {
       // The latest parent question below that boundary is the exact Turn where
       // this child was born. Canvas coordinates never participate in lineage.
       const inheritedTurn = Number.isSafeInteger(seedLength)
-        ? parentCards?.filter(candidate => Number.isInteger(candidate.sourceSeq) && candidate.sourceSeq < seedLength).at(-1)
+        ? parentCards?.filter(candidate => (Number.isInteger(candidate.sourceSeq) ? candidate.sourceSeq < seedLength : true)).at(-1)
         : undefined
-      card.parentId = state.branchAnchors.get(card.dshThreadId) ?? inheritedTurn?.id ?? null
+      const anchorId = state.branchAnchors.get(card.dshThreadId)
+      const validAnchor = (anchorId && (parentCards?.some(c => c.id === anchorId) || cards.some(c => c.id === anchorId))) ? anchorId : null
+      card.parentId = validAnchor ?? inheritedTurn?.id ?? parentCards?.at(-1)?.id ?? null
     }
   }
   return layoutConversationGraph(cards, threads)
