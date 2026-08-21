@@ -128,6 +128,7 @@ corepack pnpm dsh plugin --profile web remove dsh-synapse
 ### 数据与边界
 
 - 画布元数据保存在 DSH Home 的 `synapse/workspaces.json`（当前 schema v4，自动迁移旧版数据）。
+- 单条消息投影上限 **8000 字符**，超出截断并标注"—…（详情查看全文）"。
 - 会话内容仍由 DSH session log 保存和管理。
 - 本插件不启动第二个 Web 服务、不创建第二套 Agent，也不改变 DSH 的模型或工具执行行为。
 
@@ -253,6 +254,7 @@ The plugin is injected through the profile's `cordis.patch.yml`. Override any ke
 ### Data and scope
 
 - Canvas metadata is stored in `synapse/workspaces.json` under DSH Home (schema v4, old data migrates automatically).
+- Projected messages are capped at **8000 characters**; longer replies truncate with a "—…（详情查看全文）" marker.
 - DSH remains the owner of session-log content.
 - This plugin starts no second web server, creates no second agent, and does not modify model or tool execution.
 

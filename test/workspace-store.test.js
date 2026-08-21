@@ -257,3 +257,19 @@ test('coalesces deferred projection saves into one write', async () => {
   const parsed = JSON.parse(await readFile(dataFile, 'utf8'))
   assert.equal(parsed.workspaces[0].threads[0].messages.length, 2)
 })
+
+test('truncates over-long projections with a detail-view marker', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-synapse-truncate-'))
+  const store = new WorkspaceStore(join(directory, 'state.json'))
+  const session = { id: 's1', header: { meta: { cwd: 'C:\\work\\x' } }, firstLiveSeq: 0 }
+  await store.projectEvents(session, [
+    { type: 'user/message', seq: 1, time: 1, data: { content: [{ type: 'text', text: '问' }] } },
+    { type: 'assistant/message', seq: 2, time: 2, data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'y'.repeat(9_000) }] } } },
+  ])
+  await store.flush()
+  const [workspace] = await store.list()
+  const graph = await store.get(workspace.id)
+  const assistant = graph.threads[0].messages.find(message => message.kind === 'assistant')
+  assert.equal(assistant.text.length, 8_000 + '\n——…（详情查看全文）'.length)
+  assert.ok(assistant.text.endsWith('——…（详情查看全文）'))
+})

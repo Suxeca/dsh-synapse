@@ -8,6 +8,10 @@ export const inject = ['webServer', 'sessions']
 const MAX_BODY_BYTES = 32 * 1024
 const MAX_TITLE_LENGTH = 120
 const MAX_NOTE_LENGTH = 4_000
+// Projected message text cap: longer replies truncate with a marker pointing
+// at the detail view instead of silently cutting mid-sentence.
+const MAX_PROJECTION_LENGTH = 8_000
+const PROJECTION_TRUNCATED_SUFFIX = '\n——…（详情查看全文）'
 const TOPIC_COLORS = ['#0f766e', '#2563eb', '#be123c', '#7c3aed', '#b45309']
 const LOCK_STALE_MS = 60_000
 // Deferred (event-projection) writes coalesce into one save per window, so a
@@ -646,7 +650,9 @@ function projectableEvent(event) {
 
 function noteProjection(kind, text) {
   const normalized = text.trim()
-  return normalized === '' ? null : { kind, text: normalized.slice(0, 1_600) }
+  if (normalized === '') return null
+  if (normalized.length <= MAX_PROJECTION_LENGTH) return { kind, text: normalized }
+  return { kind, text: `${normalized.slice(0, MAX_PROJECTION_LENGTH)}${PROJECTION_TRUNCATED_SUFFIX}` }
 }
 
 function isRuntimeContextText(text) {
