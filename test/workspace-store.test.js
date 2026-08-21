@@ -17,7 +17,7 @@ test('persists a workspace, a DSH-linked thread, and a message', async () => {
   assert.equal(saved.title, '调研 DSH 插件')
   assert.equal(saved.threads[0].dshSessionId, 'session-1')
   assert.equal(saved.threads[0].messages[0].text, '确定使用已有 Web Server')
-  assert.match(await readFile(dataFile, 'utf8'), /"version": 4/)
+  assert.match(await readFile(dataFile, 'utf8'), /"version": ?4/)
 })
 
 test('projects committed DSH events once, folds tool process into the assistant card, and keeps fork lineage', async () => {
@@ -72,7 +72,7 @@ test('projects a batch of session events in a single write', async () => {
   assert.equal(thread.messages[0].text, '批量问题')
   assert.equal(thread.messages[1].process.length, 1)
   assert.equal(thread.messages[1].process[0].result, 'ok')
-  assert.match(await readFile(join(directory, 'state.json'), 'utf8'), /"version": 4/)
+  assert.match(await readFile(join(directory, 'state.json'), 'utf8'), /"version": ?4/)
 })
 
 test('migrates v3 tool cards into the assistant process records', async () => {
@@ -108,7 +108,7 @@ test('migrates v3 tool cards into the assistant process records', async () => {
   assert.equal(thread.messages[1].process[0].result, 'file content')
   assert.equal(thread.messages[1].process[1].name, 'bash')
   assert.equal(thread.messages[1].process[1].result, null)
-  assert.match(await readFile(dataFile, 'utf8'), /"version": 4/)
+  assert.match(await readFile(dataFile, 'utf8'), /"version": ?4/)
 })
 
 test('does not persist the DSH runtime context as a user conversation turn', async () => {
@@ -236,4 +236,24 @@ test('does not rewrite an up-to-date v4 file on load', async () => {
   await new WorkspaceStore(dataFile).ready
   const after = (await stat(dataFile)).mtimeMs
   assert.equal(after, before)
+})
+
+test('coalesces deferred projection saves into one write', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-synapse-debounce-'))
+  const dataFile = join(directory, 'state.json')
+  const store = new WorkspaceStore(dataFile)
+  const session = { id: 's1', header: { meta: { cwd: 'C:\\work\\x' } }, firstLiveSeq: 0 }
+  // Two deferred projections land inside one debounce window: no disk write yet.
+  await store.projectEvents(session, [{ type: 'user/message', seq: 1, time: 1, data: { content: [{ type: 'text', text: 'a' }] } }])
+  await store.projectEvents(session, [{ type: 'assistant/message', seq: 2, time: 2, data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'b' }] } } }])
+  const before = (await stat(dataFile)).mtimeMs
+  await new Promise(resolve => setTimeout(resolve, 60))
+  const mid = (await stat(dataFile)).mtimeMs
+  assert.equal(mid, before)
+  // A manual flush persists the coalesced state in one save.
+  await store.flush()
+  const after = (await stat(dataFile)).mtimeMs
+  assert.notEqual(after, before)
+  const parsed = JSON.parse(await readFile(dataFile, 'utf8'))
+  assert.equal(parsed.workspaces[0].threads[0].messages.length, 2)
 })

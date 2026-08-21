@@ -10,6 +10,10 @@ const MAX_TITLE_LENGTH = 120
 const MAX_NOTE_LENGTH = 4_000
 const TOPIC_COLORS = ['#0f766e', '#2563eb', '#be123c', '#7c3aed', '#b45309']
 const LOCK_STALE_MS = 60_000
+// Deferred (event-projection) writes coalesce into one save per window, so a
+// burst of session events costs a single full-state write instead of one per
+// event (issue #13: per-event saves pinned the main thread at ~90% CPU).
+const SAVE_DEBOUNCE_MS = 800
 
 /** JSON persistence for the Synapse workspace graph. */
 export class WorkspaceStore {
@@ -22,6 +26,8 @@ export class WorkspaceStore {
     this.lastKnownMtime = null
     this.externalModWarned = false
     this.lockWarned = false
+    this.dirty = false
+    this.flushTimer = null
   }
 
   async list() {
@@ -127,7 +133,7 @@ export class WorkspaceStore {
         }
       }
       return this.list()
-    })
+    }, { deferred: true })
   }
 
   async addMessage(threadId, text) {
@@ -194,7 +200,7 @@ export class WorkspaceStore {
         if (event.seq >= replayFrom) this.projectEventInto(workspace, thread, event)
       }
       return structuredClone(thread)
-    })
+    }, { deferred: true })
   }
 
   /** Project one committed DSH session event. Repeated sequence numbers are ignored. */
@@ -205,7 +211,7 @@ export class WorkspaceStore {
       const thread = this.dshThread(workspace, session)
       this.projectEventInto(workspace, thread, event)
       return structuredClone(thread)
-    })
+    }, { deferred: true })
   }
 
   /** Project a batch of committed events for one session in a single write. */
@@ -217,7 +223,7 @@ export class WorkspaceStore {
       const thread = this.dshThread(workspace, session)
       for (const event of events) this.projectEventInto(workspace, thread, event)
       return structuredClone(thread)
-    })
+    }, { deferred: true })
   }
 
   async load() {
@@ -234,13 +240,33 @@ export class WorkspaceStore {
     }
   }
 
-  async mutate(action) {
+  async mutate(action, { deferred = false } = {}) {
     await this.ready
     const task = this.serial.then(async () => {
       const result = action()
-      await this.save()
+      if (deferred) this.markDirty()
+      else await this.save()
       return result
     })
+    this.serial = task.catch(() => undefined)
+    return task
+  }
+
+  /** Mark the state dirty and schedule one trailing flush for the window. */
+  markDirty() {
+    this.dirty = true
+    if (this.flushTimer !== null) return
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null
+      void this.flush()
+    }, SAVE_DEBOUNCE_MS)
+  }
+
+  /** Persist the current state when dirty, ordered after in-flight mutations. */
+  flush() {
+    if (!this.dirty) return Promise.resolve()
+    this.dirty = false
+    const task = this.serial.then(() => this.save())
     this.serial = task.catch(() => undefined)
     return task
   }
@@ -261,7 +287,7 @@ export class WorkspaceStore {
     await this.acquireLock()
     try {
       const temporaryFile = `${this.dataFile}.${process.pid}.tmp`
-      await writeFile(temporaryFile, `${JSON.stringify(this.state, null, 2)}\n`, 'utf8')
+      await writeFile(temporaryFile, `${JSON.stringify(this.state)}\n`, 'utf8')
       await rename(temporaryFile, this.dataFile)
       this.lastKnownMtime = (await stat(this.dataFile)).mtimeMs
     } finally {
