@@ -132,3 +132,72 @@ test('leaves text selections inside cards intact', async () => {
   assert.match(cardClick, /Math\.hypot/)
   assert.match(source, /pointerDownPosition = \{ x: event\.clientX/)
 })
+
+test('renders accessible symbol-only controls for cards with descendants', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const card = source.slice(source.indexOf('function conversationCard'), source.indexOf('function draftActions'))
+
+  assert.match(card, /childCount === 0 \? ''/)
+  assert.match(card, /class="graph-fold-button/)
+  assert.match(card, /data-action="toggle-card-children"/)
+  assert.match(card, /aria-expanded=/)
+  assert.match(card, /aria-label=/)
+  assert.match(card, /M3\.5 8h9/)
+  assert.match(card, /M8 3\.5v9/)
+  assert.match(card, />追问<\/button>/)
+  assert.doesNotMatch(card, /class="branch-button"/)
+})
+
+test('persists graph collapse choices and renders connectors from visible cards only', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const canvas = source.slice(source.indexOf('function renderCanvas'), source.indexOf('function isProcessMessage'))
+  const toggle = source.slice(source.indexOf("button.dataset.action === 'toggle-card-children'"), source.indexOf("button.dataset.action === 'open-continue'"))
+
+  assert.match(source, /COLLAPSED_CARDS_KEY/)
+  assert.match(source, /localStorage\.setItem\(COLLAPSED_CARDS_KEY/)
+  assert.match(canvas, /const graph = conversationGraphView\(allCards\)/)
+  assert.match(canvas, /const cards = graph\.cards/)
+  assert.match(canvas, /canvasConnectors\(cards\)/)
+  assert.match(toggle, /state\.collapsedCardIds\.(?:has|delete|add)/)
+  assert.match(toggle, /persistCollapsedCards\(\)/)
+})
+
+test('identifies when an anchored draft has no visible parent card', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const placement = source.slice(source.indexOf('function draftPlacement'), source.indexOf('function draftCard'))
+
+  assert.match(placement, /draft\.anchorId === undefined/)
+  assert.match(placement, /cards\.find\(card => card\.id === draft\.anchorId\)/)
+  assert.match(placement, /if \(parent === undefined\) return null/)
+})
+
+test('prevents collapse from hiding drafts or the active conversation and restores focus', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const toggle = source.slice(source.indexOf("button.dataset.action === 'toggle-card-children'"), source.indexOf("button.dataset.action === 'open-continue'"))
+
+  assert.match(toggle, /const visibleCards = conversationGraphView\(allCards, nextCollapsed\)\.cards/)
+  assert.match(toggle, /draftPlacement\(allCards\)\?\.parent\.id/)
+  assert.match(toggle, /请先完成或取消正在编辑的追问或分支/)
+  assert.match(toggle, /当前会话位于这个后续分支中/)
+  assert.match(toggle, /window\.setTimeout/)
+  assert.match(toggle, /\.focus\(\)/)
+})
+
+test('reveals hidden ancestor paths when a conversation becomes current', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const reveal = source.slice(source.indexOf('function revealConversationThread'), source.indexOf('function canvasConnectors'))
+  const current = source.slice(source.indexOf("data.type === 'synapse:current-session'"), source.indexOf("data.type === 'synapse:live-reply'"))
+
+  assert.match(reveal, /state\.collapsedCardIds\.delete\(parentId\)/)
+  assert.match(reveal, /persistCollapsedCards\(\)/)
+  assert.match(current, /revealConversationThread\(conversationCards\(state\.workspace\.threads\), thread\.id\)/)
+})
+
+test('prunes persisted collapsed state when a conversation is archived', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const archive = source.slice(source.indexOf('async function archiveThread'), source.indexOf('function openContinue'))
+
+  assert.match(archive, /state\.collapsedCardIds/)
+  assert.match(archive, /key\.startsWith\(`\$\{id\}:`\)/)
+  assert.match(archive, /persistCollapsedCards\(\)/)
+})

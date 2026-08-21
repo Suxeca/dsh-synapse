@@ -7,10 +7,10 @@ async function loadConversationCards() {
   const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
   const start = source.indexOf('function overlapsCard')
   const end = source.indexOf('function canvasConnectors')
-  const context = { globalThis: {}, CARD_WIDTH: 310, CARD_HEIGHT: 276, CARD_GAP_Y: 42, CAMERA_INSET_X: 56, CAMERA_INSET_Y: 56, messagesFor: thread => thread.messages, state: { branchAnchors: new Map(), cardPositions: new Map(), liveReplies: new Map() } }
+  const context = { globalThis: {}, CARD_WIDTH: 310, CARD_HEIGHT: 276, CARD_GAP_Y: 42, CAMERA_INSET_X: 56, CAMERA_INSET_Y: 56, messagesFor: thread => thread.messages, state: { branchAnchors: new Map(), cardPositions: new Map(), liveReplies: new Map(), collapsedCardIds: new Set() } }
   vm.createContext(context)
-  vm.runInContext(`${source.slice(start, end)};globalThis.conversationCards = conversationCards;globalThis.initialCanvasCamera = initialCanvasCamera`, context)
-  return { conversationCards: context.globalThis.conversationCards, initialCanvasCamera: context.globalThis.initialCanvasCamera, state: context.state }
+  vm.runInContext(`${source.slice(start, end)};globalThis.conversationCards = conversationCards;globalThis.conversationGraphView = conversationGraphView;globalThis.initialCanvasCamera = initialCanvasCamera`, context)
+  return { conversationCards: context.globalThis.conversationCards, conversationGraphView: context.globalThis.conversationGraphView, initialCanvasCamera: context.globalThis.initialCanvasCamera, state: context.state }
 }
 
 test('projects each user question in one DSH session as a connected canvas card', async () => {
@@ -228,4 +228,131 @@ test('focuses a new-session draft before existing cards when initializing the ca
 
   assert.equal(camera.x, -30)
   assert.equal(camera.y, -26)
+})
+
+test('collapsing a conversation card hides its complete linear descendant chain', async () => {
+  const { conversationCards, conversationGraphView } = await loadConversationCards()
+  const cards = conversationCards([{
+    id: 'session-1', parentId: null,
+    messages: [
+      { kind: 'user', text: '第一轮', sourceSeq: 1 },
+      { kind: 'assistant', text: '回答一', sourceSeq: 2 },
+      { kind: 'user', text: '第二轮', sourceSeq: 3 },
+      { kind: 'assistant', text: '回答二', sourceSeq: 4 },
+      { kind: 'user', text: '第三轮', sourceSeq: 5 },
+      { kind: 'assistant', text: '回答三', sourceSeq: 6 },
+    ],
+  }])
+
+  const graph = conversationGraphView(cards, new Set([cards[0].id]))
+  assert.deepEqual(Array.from(graph.cards, card => card.id), [cards[0].id])
+  assert.equal(graph.childCounts.get(cards[0].id), 1)
+  assert.equal(graph.descendantCounts.get(cards[0].id), 2)
+})
+
+test('collapsing a fork point hides all branch descendants without hiding another root', async () => {
+  const { conversationCards, conversationGraphView } = await loadConversationCards()
+  const cards = conversationCards([
+    {
+      id: 'parent', parentId: null,
+      messages: [
+        { kind: 'user', text: '父问题', sourceSeq: 1 },
+        { kind: 'assistant', text: '父回答', sourceSeq: 2 },
+        { kind: 'user', text: '父追问', sourceSeq: 5 },
+        { kind: 'assistant', text: '父追问回答', sourceSeq: 6 },
+      ],
+    },
+    {
+      id: 'child', parentId: 'parent', sourceSeedLength: 4,
+      messages: [
+        { kind: 'user', text: '分支问题', sourceSeq: 4 },
+        { kind: 'assistant', text: '分支回答', sourceSeq: 5 },
+        { kind: 'user', text: '分支追问', sourceSeq: 6 },
+      ],
+    },
+    { id: 'other-root', parentId: null, messages: [{ kind: 'user', text: '独立会话', sourceSeq: 1 }] },
+  ])
+  const forkPoint = cards.find(card => card.dshThreadId === 'parent' && card.turnIndex === 0)
+  const graph = conversationGraphView(cards, new Set([forkPoint.id]))
+
+  assert.deepEqual(Array.from(graph.cards, card => card.question).sort(), ['父问题', '独立会话'].sort())
+  assert.equal(graph.childCounts.get(forkPoint.id), 2)
+  assert.equal(graph.descendantCounts.get(forkPoint.id), 3)
+})
+
+test('expanding a card restores descendants at their original coordinates', async () => {
+  const { conversationCards, conversationGraphView } = await loadConversationCards()
+  const cards = conversationCards([{
+    id: 'session-1', parentId: null,
+    messages: [
+      { kind: 'user', text: '第一轮', sourceSeq: 1 },
+      { kind: 'assistant', text: '回答一', sourceSeq: 2 },
+      { kind: 'user', text: '第二轮', sourceSeq: 3 },
+    ],
+  }])
+  const originalPositions = cards.map(card => ({ ...card.position }))
+
+  assert.equal(conversationGraphView(cards, new Set([cards[0].id])).cards.length, 1)
+  const expanded = conversationGraphView(cards, new Set()).cards
+  assert.equal(expanded.length, 2)
+  assert.deepEqual(expanded.map(card => ({ ...card.position })), originalPositions)
+})
+
+test('a new descendant remains hidden while its ancestor is collapsed', async () => {
+  const { conversationCards, conversationGraphView } = await loadConversationCards()
+  const initialCards = conversationCards([{
+    id: 'session-1', parentId: null,
+    messages: [
+      { kind: 'user', text: '第一轮', sourceSeq: 1 },
+      { kind: 'assistant', text: '回答一', sourceSeq: 2 },
+      { kind: 'user', text: '第二轮', sourceSeq: 3 },
+    ],
+  }])
+  const collapsedId = initialCards[0].id
+  const updatedCards = conversationCards([{
+    id: 'session-1', parentId: null,
+    messages: [
+      { kind: 'user', text: '第一轮', sourceSeq: 1 },
+      { kind: 'assistant', text: '回答一', sourceSeq: 2 },
+      { kind: 'user', text: '第二轮', sourceSeq: 3 },
+      { kind: 'assistant', text: '回答二', sourceSeq: 4 },
+      { kind: 'user', text: '后来新增的第三轮', sourceSeq: 5 },
+    ],
+  }])
+
+  const graph = conversationGraphView(updatedCards, new Set([collapsedId]))
+  assert.deepEqual(Array.from(graph.cards, card => card.question), ['第一轮'])
+  assert.equal(graph.descendantCounts.get(collapsedId), 2)
+})
+
+test('nested collapsed nodes remain visible when their ancestor is expanded', async () => {
+  const { conversationCards, conversationGraphView } = await loadConversationCards()
+  const cards = conversationCards([{
+    id: 'session-1', parentId: null,
+    messages: [
+      { kind: 'user', text: '第一轮', sourceSeq: 1 },
+      { kind: 'assistant', text: '回答一', sourceSeq: 2 },
+      { kind: 'user', text: '第二轮', sourceSeq: 3 },
+      { kind: 'assistant', text: '回答二', sourceSeq: 4 },
+      { kind: 'user', text: '第三轮', sourceSeq: 5 },
+    ],
+  }])
+
+  const nested = conversationGraphView(cards, new Set([cards[0].id, cards[1].id]))
+  assert.deepEqual(Array.from(nested.cards, card => card.question), ['第一轮', '第二轮'])
+  const childOnly = conversationGraphView(cards, new Set([cards[1].id]))
+  assert.deepEqual(Array.from(childOnly.cards, card => card.question), ['第一轮', '第二轮'])
+})
+
+test('cyclic collapsed roots stay visible and count unique descendants', async () => {
+  const { conversationGraphView } = await loadConversationCards()
+  const cards = [
+    { id: 'a', parentId: 'b', dshThreadId: 'a' },
+    { id: 'b', parentId: 'a', dshThreadId: 'b' },
+  ]
+  const graph = conversationGraphView(cards, new Set(['a', 'b']))
+
+  assert.deepEqual(Array.from(graph.cards, card => card.id), ['a', 'b'])
+  assert.equal(graph.descendantCounts.get('a'), 1)
+  assert.equal(graph.descendantCounts.get('b'), 1)
 })
