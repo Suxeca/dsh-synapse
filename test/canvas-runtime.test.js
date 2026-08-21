@@ -133,11 +133,14 @@ test('leaves text selections inside cards intact', async () => {
   assert.match(source, /pointerDownPosition = \{ x: event\.clientX/)
 })
 
-test('renders accessible fold and DSH branch icon controls on non-final cards', async () => {
+test('renders a follow-up plus on final cards and fold plus branch controls on non-final cards', async () => {
   const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
   const card = source.slice(source.indexOf('function conversationCard'), source.indexOf('function draftActions'))
 
-  assert.match(card, /childCount === 0 \? ''/)
+  assert.match(card, /class="graph-continue-button"/)
+  assert.match(card, /data-action="open-continue"/)
+  assert.match(card, /aria-label="添加追问"/)
+  assert.match(card, /childCount === 0 \|\| card\.canContinue === true \? ''/)
   assert.match(card, /class="graph-fold-button/)
   assert.match(card, /data-action="toggle-card-children"/)
   assert.match(card, /aria-expanded=/)
@@ -147,17 +150,18 @@ test('renders accessible fold and DSH branch icon controls on non-final cards', 
   assert.match(card, /class="graph-branch-button"/)
   assert.match(card, /aria-label="在新对话中分支"/)
   assert.match(card, /M13\.0762 1\.37207C14\.0846/)
-  assert.match(card, />追问<\/button>/)
+  assert.doesNotMatch(card, />追问<\/button>/)
   assert.doesNotMatch(card, />分支<\/button>/)
   assert.doesNotMatch(card, /class="branch-button"/)
 })
 
-test('positions the DSH branch icon directly below the graph fold control', async () => {
+test('positions the latest plus at the connector and the branch icon below the fold control', async () => {
   const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8')
 
+  assert.match(styles, /\.graph-continue-button, \.graph-fold-button \{ top: 50%; transform: translateY\(-50%\); \}/)
   assert.match(styles, /\.graph-branch-button \{ top: calc\(50% \+ 30px\); transform: translateY\(-50%\); \}/)
-  assert.match(styles, /\.graph-fold-button svg, \.graph-branch-button svg/)
-  assert.match(styles, /\[data-theme="dark"\] \.graph-fold-button, \[data-theme="dark"\] \.graph-branch-button/)
+  assert.match(styles, /\.graph-continue-button svg, \.graph-fold-button svg, \.graph-branch-button svg/)
+  assert.match(styles, /\[data-theme="dark"\] \.graph-continue-button, \[data-theme="dark"\] \.graph-fold-button, \[data-theme="dark"\] \.graph-branch-button/)
 })
 
 test('persists graph collapse choices and renders connectors from visible cards only', async () => {
