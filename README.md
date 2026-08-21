@@ -33,7 +33,7 @@
 | 📥 | 持续投影 | 用户消息和助手回复投影到对应卡片；流式回复在详情中持续更新 |
 | 🔧 | 工具过程折叠 | 工具调用与结果按 `callId` 配对，折叠进对应助手回复卡，不再单独成卡 |
 | ⚡ | 会话同步 | 原生对话与会话地图双向同步当前会话——任一侧切换，另一侧跟随高亮 |
-| 🎨 | 画布交互 | 拖动画布、缩放视图（最高 4×）、移动卡片（位置自动保存）、一键定位当前会话，卡片内平滑滚动 |
+| 🎨 | 画布交互 | 拖动画布、缩放视图（最高 4×）、移动卡片（位置自动保存）、展开/折叠后续对话子树、一键定位当前会话，卡片内平滑滚动 |
 | 🔒 | 原生会话不变 | 打开、追问、创建和归档仍由 DSH 会话系统完成；Synapse 只提供另一种查看与组织方式 |
 
 ![Native dialogue and Synapse toggle](docs/images/native-webui.png)
@@ -160,7 +160,7 @@ Complex work is rarely linear. You may need to preserve one approach, return to 
 | 📥 | Live projection | Project user messages and assistant replies into cards, with streaming updates in the detail view |
 | 🔧 | Folded tool process | Tool calls and results pair by `callId` and fold into the assistant reply card instead of becoming standalone cards |
 | ⚡ | Session sync | The native chat and the session map sync the current session bidirectionally — switching on either side highlights the other |
-| 🎨 | Canvas interaction | Pan, zoom (up to 4×), move cards (positions persist), one-click focus on the current session, and smooth scrolling inside each card |
+| 🎨 | Canvas interaction | Pan, zoom (up to 4×), move cards (positions persist), expand or collapse descendant subtrees, one-click focus on the current session, and smooth scrolling inside each card |
 | 🔒 | Native sessions stay native | Opening, prompting, creating, and archiving sessions remains DSH-owned; Synapse only changes how they are viewed and organized |
 
 ### Quick start

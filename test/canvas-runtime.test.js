@@ -132,3 +132,88 @@ test('leaves text selections inside cards intact', async () => {
   assert.match(cardClick, /Math\.hypot/)
   assert.match(source, /pointerDownPosition = \{ x: event\.clientX/)
 })
+
+test('renders a follow-up plus on final cards and fold plus branch controls on non-final cards', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const card = source.slice(source.indexOf('function conversationCard'), source.indexOf('function draftActions'))
+
+  assert.match(card, /class="graph-continue-button"/)
+  assert.match(card, /data-action="open-continue"/)
+  assert.match(card, /aria-label="添加追问"/)
+  assert.match(card, /childCount === 0 \|\| card\.canContinue === true \? ''/)
+  assert.match(card, /class="graph-fold-button/)
+  assert.match(card, /data-action="toggle-card-children"/)
+  assert.match(card, /aria-expanded=/)
+  assert.match(card, /M3\.5 8h9/)
+  assert.match(card, /M8 3\.5v9/)
+  assert.match(card, /childCount === 0 \|\| card\.canContinue === true \|\| !Number\.isInteger\(card\.answer\?\.sourceSeq\)/)
+  assert.match(card, /class="graph-branch-button"/)
+  assert.match(card, /aria-label="在新对话中分支"/)
+  assert.match(card, /M13\.0762 1\.37207C14\.0846/)
+  assert.doesNotMatch(card, />追问<\/button>/)
+  assert.doesNotMatch(card, />分支<\/button>/)
+  assert.doesNotMatch(card, /class="branch-button"/)
+})
+
+test('positions the latest plus at the connector and the branch icon below the fold control', async () => {
+  const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8')
+
+  assert.match(styles, /\.graph-continue-button, \.graph-fold-button \{ top: 50%; transform: translateY\(-50%\); \}/)
+  assert.match(styles, /\.graph-branch-button \{ top: calc\(50% \+ 30px\); transform: translateY\(-50%\); \}/)
+  assert.match(styles, /\.graph-continue-button svg, \.graph-fold-button svg, \.graph-branch-button svg/)
+  assert.match(styles, /\[data-theme="dark"\] \.graph-continue-button, \[data-theme="dark"\] \.graph-fold-button, \[data-theme="dark"\] \.graph-branch-button/)
+})
+
+test('persists graph collapse choices and renders connectors from visible cards only', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const canvas = source.slice(source.indexOf('function renderCanvas'), source.indexOf('function isProcessMessage'))
+  const toggle = source.slice(source.indexOf("button.dataset.action === 'toggle-card-children'"), source.indexOf("button.dataset.action === 'open-continue'"))
+
+  assert.match(source, /COLLAPSED_CARDS_KEY/)
+  assert.match(source, /localStorage\.setItem\(COLLAPSED_CARDS_KEY/)
+  assert.match(canvas, /const graph = conversationGraphView\(allCards\)/)
+  assert.match(canvas, /const cards = graph\.cards/)
+  assert.match(canvas, /canvasConnectors\(cards\)/)
+  assert.match(toggle, /state\.collapsedCardIds\.(?:has|delete|add)/)
+  assert.match(toggle, /persistCollapsedCards\(\)/)
+})
+
+test('identifies when an anchored draft has no visible parent card', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const placement = source.slice(source.indexOf('function draftPlacement'), source.indexOf('function draftCard'))
+
+  assert.match(placement, /draft\.anchorId === undefined/)
+  assert.match(placement, /cards\.find\(card => card\.id === draft\.anchorId\)/)
+  assert.match(placement, /if \(parent === undefined\) return null/)
+})
+
+test('prevents collapse from hiding drafts or the active conversation and restores focus', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const toggle = source.slice(source.indexOf("button.dataset.action === 'toggle-card-children'"), source.indexOf("button.dataset.action === 'open-continue'"))
+
+  assert.match(toggle, /const visibleCards = conversationGraphView\(allCards, nextCollapsed\)\.cards/)
+  assert.match(toggle, /draftPlacement\(allCards\)\?\.parent\.id/)
+  assert.match(toggle, /请先完成或取消正在编辑的追问或分支/)
+  assert.match(toggle, /当前会话位于这个后续分支中/)
+  assert.match(toggle, /window\.setTimeout/)
+  assert.match(toggle, /\.focus\(\)/)
+})
+
+test('reveals hidden ancestor paths when a conversation becomes current', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const reveal = source.slice(source.indexOf('function revealConversationThread'), source.indexOf('function canvasConnectors'))
+  const current = source.slice(source.indexOf("data.type === 'synapse:current-session'"), source.indexOf("data.type === 'synapse:live-reply'"))
+
+  assert.match(reveal, /state\.collapsedCardIds\.delete\(parentId\)/)
+  assert.match(reveal, /persistCollapsedCards\(\)/)
+  assert.match(current, /revealConversationThread\(conversationCards\(state\.workspace\.threads\), thread\.id\)/)
+})
+
+test('prunes persisted collapsed state when a conversation is archived', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const archive = source.slice(source.indexOf('async function archiveThread'), source.indexOf('function openContinue'))
+
+  assert.match(archive, /state\.collapsedCardIds/)
+  assert.match(archive, /key\.startsWith\(`\$\{id\}:`\)/)
+  assert.match(archive, /persistCollapsedCards\(\)/)
+})

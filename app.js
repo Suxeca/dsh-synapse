@@ -2,6 +2,7 @@ const app = document.querySelector('#app')
 if ('scrollRestoration' in history) history.scrollRestoration = 'manual'
 const LEGACY_CARD_POSITIONS_KEY = 'dsh-synapse:card-positions'
 const CARD_POSITIONS_KEY = 'dsh-synapse:card-positions:v3'
+const COLLAPSED_CARDS_KEY = 'dsh-synapse:collapsed-cards:v1'
 const savedBranchAnchors = (() => {
   try {
     const value = JSON.parse(localStorage.getItem('dsh-synapse:branch-anchors') ?? '[]')
@@ -17,6 +18,12 @@ const savedCardPositions = (() => {
     return Array.isArray(value) ? value.filter(item => Array.isArray(item) && typeof item[0] === 'string' && item[1] !== null && Number.isFinite(item[1].x) && Number.isFinite(item[1].y)) : []
   } catch { return [] }
 })()
+const savedCollapsedCards = (() => {
+  try {
+    const value = JSON.parse(localStorage.getItem(COLLAPSED_CARDS_KEY) ?? '[]')
+    return Array.isArray(value) ? value.filter(item => typeof item === 'string') : []
+  } catch { return [] }
+})()
 const CARD_WIDTH = 310
 const CARD_HEIGHT = 276
 const CARD_GAP_Y = 42
@@ -26,7 +33,7 @@ const state = {
   summaries: [], workspace: null, activeId: null, mode: 'canvas', zoom: 1, currentDsh: null, sidebarCollapsed: false,
   dshWorkspaces: [], selectedDshWorkspaceId: null,
   historyBySession: new Map(), historyRequests: new Map(), pendingReplies: new Map(), pendingRpc: new Map(), liveReplies: new Map(),
-  draft: null, error: '', workspaceLoad: 0, branchAnchors: new Map(savedBranchAnchors), cardPositions: new Map(savedCardPositions),
+  draft: null, error: '', workspaceLoad: 0, branchAnchors: new Map(savedBranchAnchors), cardPositions: new Map(savedCardPositions), collapsedCardIds: new Set(savedCollapsedCards),
   dragging: false, canvasGesture: false, canvasRefreshAfter: 0, canvasViewInitialized: false, canvasCamera: { x: 0, y: 0 },
   expandedMessageIds: new Set(),
 }
@@ -43,6 +50,10 @@ function rememberBranchAnchor(sessionId, cardId) {
 
 function persistCardPositions() {
   try { localStorage.setItem(CARD_POSITIONS_KEY, JSON.stringify([...state.cardPositions])) } catch { /* Private browsing may disable local storage. */ }
+}
+
+function persistCollapsedCards() {
+  try { localStorage.setItem(COLLAPSED_CARDS_KEY, JSON.stringify([...state.collapsedCardIds])) } catch { /* Private browsing may disable local storage. */ }
 }
 
 function rememberCardPosition(cardId, position, aliases = []) {
@@ -159,6 +170,7 @@ async function openDshWorkspace(id, { renderAfter = true } = {}) {
   state.workspace = { id: nextWorkspaceId, title: workspace.title, cwd: workspace.path, threads }
   const currentThread = currentDshThread(state.workspace.threads)
   state.activeId = currentThread?.id ?? (state.workspace.threads.some(thread => thread.id === state.activeId) ? state.activeId : state.workspace.threads[0]?.id ?? null)
+  if (currentThread !== undefined) revealConversationThread(conversationCards(state.workspace.threads), currentThread.id)
   if (renderAfter && canReplaceView()) render()
   await Promise.all(state.workspace.threads.map(thread => loadThreadHistory(thread, false)))
   if (renderAfter && load === state.workspaceLoad && canReplaceView()) render()
@@ -235,6 +247,14 @@ async function archiveThread(thread) {
     for (const key of [...state.cardPositions.keys()]) {
       if ([...removed].some(id => key.startsWith(`${id}:`))) state.cardPositions.delete(key)
     }
+    let collapsedChanged = false
+    for (const key of [...state.collapsedCardIds]) {
+      if ([...removed].some(id => key.startsWith(`${id}:`))) {
+        state.collapsedCardIds.delete(key)
+        collapsedChanged = true
+      }
+    }
+    if (collapsedChanged) persistCollapsedCards()
     state.activeId = state.activeId !== null && state.workspace.threads.some(item => item.id === state.activeId)
       ? state.activeId
       : state.workspace.threads[0]?.id ?? null
@@ -644,6 +664,70 @@ function conversationCards(threads) {
   return layoutConversationGraph(cards, threads)
 }
 
+function conversationGraphView(cards, collapsedCardIds = state.collapsedCardIds) {
+  const cardIds = new Set(cards.map(card => card.id))
+  const childrenByParent = new Map()
+  for (const card of cards) {
+    if (card.parentId === null || !cardIds.has(card.parentId)) continue
+    const children = childrenByParent.get(card.parentId) ?? []
+    children.push(card.id)
+    childrenByParent.set(card.parentId, children)
+  }
+
+  const hiddenIds = new Set()
+  for (const rootId of collapsedCardIds) {
+    if (!cardIds.has(rootId)) continue
+    const visited = new Set([rootId])
+    const visit = parentId => {
+      for (const childId of childrenByParent.get(parentId) ?? []) {
+        if (visited.has(childId)) continue
+        visited.add(childId)
+        hiddenIds.add(childId)
+        visit(childId)
+      }
+    }
+    visit(rootId)
+  }
+
+  // Persisted collapse roots must remain visible even if malformed metadata
+  // contains a cycle where two collapsed nodes otherwise hide each other.
+  for (const rootId of collapsedCardIds) hiddenIds.delete(rootId)
+
+  const descendantCounts = new Map()
+  for (const card of cards) {
+    const visited = new Set([card.id])
+    const pending = [...(childrenByParent.get(card.id) ?? [])]
+    while (pending.length > 0) {
+      const descendantId = pending.pop()
+      if (visited.has(descendantId)) continue
+      visited.add(descendantId)
+      pending.push(...(childrenByParent.get(descendantId) ?? []))
+    }
+    descendantCounts.set(card.id, visited.size - 1)
+  }
+
+  return {
+    cards: cards.filter(card => !hiddenIds.has(card.id)),
+    childCounts: new Map(cards.map(card => [card.id, childrenByParent.get(card.id)?.length ?? 0])),
+    descendantCounts,
+  }
+}
+
+function revealConversationThread(cards, threadId) {
+  const byId = new Map(cards.map(card => [card.id, card]))
+  let changed = false
+  for (const target of cards.filter(card => card.dshThreadId === threadId)) {
+    const visited = new Set([target.id])
+    let parentId = target.parentId
+    while (parentId !== null && !visited.has(parentId)) {
+      visited.add(parentId)
+      if (state.collapsedCardIds.delete(parentId)) changed = true
+      parentId = byId.get(parentId)?.parentId ?? null
+    }
+  }
+  if (changed) persistCollapsedCards()
+}
+
 function canvasConnectors(cards) {
   const index = new Map(cards.map(card => [card.id, card]))
   const links = cards.map(card => {
@@ -658,19 +742,24 @@ function canvasConnectors(cards) {
   return links.join('')
 }
 
-function conversationCard(card) {
+function conversationCard(card, graph) {
   const active = card.dshThreadId === state.activeId ? 'active' : ''
   const source = card.parentId === null ? 'DSH 会话' : card.turnIndex === 0 ? 'DSH 分支' : '追问'
-  const branchSequence = Number.isInteger(card.answer?.sourceSeq) ? ` data-seq="${card.answer.sourceSeq}"` : ''
   const continueButton = card.canContinue === true
-    ? `<button class="branch-button" data-action="open-continue" data-thread="${card.dshThreadId}" data-card="${card.id}" title="添加追问" aria-label="为 ${escapeHtml(card.question)} 添加追问"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></svg></button>`
+    ? `<button class="graph-continue-button" data-action="open-continue" data-thread="${card.dshThreadId}" data-card="${escapeHtml(card.id)}" aria-label="添加追问" title="添加追问"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></svg></button>`
     : ''
+  const childCount = graph.childCounts.get(card.id) ?? 0
+  const collapsed = state.collapsedCardIds.has(card.id)
+  const foldLabel = collapsed ? '展开后续对话' : '折叠后续对话'
+  const foldButton = childCount === 0 || card.canContinue === true ? '' : `<button class="graph-fold-button${collapsed ? ' collapsed' : ''}" data-action="toggle-card-children" data-card="${escapeHtml(card.id)}" aria-expanded="${collapsed ? 'false' : 'true'}" aria-label="${foldLabel}" title="${foldLabel}"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3.5 8h9"/>${collapsed ? '<path d="M8 3.5v9"/>' : ''}</svg></button>`
+  const branchButton = childCount === 0 || card.canContinue === true || !Number.isInteger(card.answer?.sourceSeq) ? '' : `<button class="graph-branch-button" data-action="open-branch" data-thread="${card.dshThreadId}" data-card="${escapeHtml(card.id)}" data-seq="${card.answer.sourceSeq}" aria-label="在新对话中分支" title="在新对话中分支"><svg aria-hidden="true" viewBox="0 0 16 16"><path fill-rule="evenodd" clip-rule="evenodd" d="M13.0762 1.37207C14.0846 1.37228 14.9021 2.19077 14.9023 3.19922C14.9022 4.20772 14.0847 5.02518 13.0762 5.02539C12.2967 5.02539 11.6325 4.53691 11.3701 3.84961H4.35547C4.79397 4.26458 5.15861 4.7644 5.41699 5.33496L7.10645 9.06738C7.88526 10.7875 9.55104 11.9228 11.4189 12.0371C11.7085 11.4109 12.3411 10.9756 13.0762 10.9756C14.0843 10.9759 14.9023 11.7936 14.9023 12.8018C14.9023 13.81 14.0843 14.6277 13.0762 14.6279C12.2534 14.6279 11.5574 14.0832 11.3291 13.335C8.9868 13.1879 6.89981 11.7612 5.92285 9.60352L4.23242 5.87109C3.67503 4.64033 2.44878 3.84961 1.09766 3.84961V2.54883C1.10665 2.54883 1.11601 2.54975 1.125 2.5498L11.3701 2.54883C11.6326 1.86151 12.2969 1.37207 13.0762 1.37207ZM13.0762 12.2764C12.7858 12.2764 12.5508 12.5114 12.5508 12.8018C12.5508 13.0921 12.7858 13.3281 13.0762 13.3281C13.3664 13.3279 13.6025 13.092 13.6025 12.8018C13.6025 12.5115 13.3664 12.2766 13.0762 12.2764ZM13.0762 2.67285C12.7855 2.67285 12.55 2.90861 12.5498 3.19922C12.5499 3.48987 12.7855 3.72559 13.0762 3.72559C13.3667 3.72538 13.6024 3.48975 13.6025 3.19922C13.6023 2.90874 13.3666 2.67306 13.0762 2.67285Z" fill="currentColor"/></svg></button>`
   return `<article class="thread-card ${active}" data-card-id="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px;--thread-color:#3478f6">
     <button class="node-handle" data-drag-card="${card.id}" aria-label="拖动 ${escapeHtml(card.question)}" title="拖动卡片"></button>
-    <div class="thread-card-head"><span class="topic-dot"></span><button class="thread-title" data-action="show-thread" data-thread="${card.dshThreadId}" title="查看完整会话：${escapeHtml(card.question)}">${escapeHtml(card.question)}</button>${continueButton}</div>
+    ${continueButton}${foldButton}${branchButton}
+    <div class="thread-card-head"><span class="topic-dot"></span><button class="thread-title" data-action="show-thread" data-thread="${card.dshThreadId}" title="查看完整会话：${escapeHtml(card.question)}">${escapeHtml(card.question)}</button></div>
     <div class="thread-meta"><span>${source}</span><span>第 ${card.turnIndex + 1} 轮</span></div>
     <div class="thread-answer">${card.answer === null ? '<p class="thread-answer-empty">等待助手回复</p>' : card.answer.pending && card.answer.text === '' ? '<p class="thread-answer-pending">正在回复</p>' : `${renderMarkdown(card.answer.text)}${card.answer.pending ? '<p class="thread-answer-pending">正在回复</p>' : ''}`}</div>
-    <footer><button data-action="show-thread" data-thread="${card.dshThreadId}">详情</button><button data-action="open-branch" data-thread="${card.dshThreadId}" data-card="${card.id}"${branchSequence}>分支</button><button data-action="open-dsh" data-thread="${card.dshThreadId}">打开 DSH</button><button data-action="archive-thread" data-thread="${card.dshThreadId}">归档</button></footer>
+    <footer><button data-action="show-thread" data-thread="${card.dshThreadId}">详情</button><button data-action="open-dsh" data-thread="${card.dshThreadId}">打开 DSH</button><button data-action="archive-thread" data-thread="${card.dshThreadId}">归档</button></footer>
   </article>`
 }
 
@@ -682,7 +771,9 @@ function draftActions(draft) {
 function draftPlacement(cards) {
   const draft = state.draft
   if (draft === null || draft.kind === 'new') return null
-  const parent = cards.find(card => card.id === draft.anchorId) ?? cards.filter(card => card.dshThreadId === draft.parentId).at(-1)
+  const parent = draft.anchorId === undefined
+    ? cards.filter(card => card.dshThreadId === draft.parentId).at(-1)
+    : cards.find(card => card.id === draft.anchorId)
   if (parent === undefined) return null
   return { parent, position: firstAvailableCardPosition({ x: parent.position.x + 365, y: parent.position.y }, cards.map(card => card.position)) }
 }
@@ -705,12 +796,14 @@ function draftCard(cards) {
 function renderCanvas() {
   const threads = state.workspace?.threads ?? []
   if (threads.length === 0 && state.draft?.kind !== 'new') return `<section class="empty-canvas"><strong>当前工作目录还没有 DSH 对话。</strong><p>点击新会话，在画布中输入第一条消息。</p><div><button class="primary" type="button" data-action="create-session">新建会话</button></div></section>`
-  const cards = conversationCards(threads)
+  const allCards = conversationCards(threads)
+  const graph = conversationGraphView(allCards)
+  const cards = graph.cards
   if (!state.canvasViewInitialized) {
     state.canvasCamera = initialCanvasCamera(cards)
     state.canvasViewInitialized = true
   }
-  return `<section class="canvas-view"><div class="canvas-viewport"><div class="canvas-content" style="transform:translate(${state.canvasCamera.x}px, ${state.canvasCamera.y}px) scale(${state.zoom})"><svg class="connectors">${canvasConnectors(cards)}</svg><div class="cards-layer">${cards.map(conversationCard).join('')}${draftCard(cards)}</div></div></div></section>`
+  return `<section class="canvas-view"><div class="canvas-viewport"><div class="canvas-content" style="transform:translate(${state.canvasCamera.x}px, ${state.canvasCamera.y}px) scale(${state.zoom})"><svg class="connectors">${canvasConnectors(cards)}</svg><div class="cards-layer">${cards.map(card => conversationCard(card, graph)).join('')}${draftCard(cards)}</div></div></div></section>`
 }
 
 function isProcessMessage(message) {
@@ -965,6 +1058,7 @@ app.addEventListener('click', async event => {
     if (button.dataset.action === 'select-thread' && thread !== undefined) {
       state.activeId = thread.id
       state.error = ''
+      if (state.workspace !== null) revealConversationThread(conversationCards(state.workspace.threads), thread.id)
       render()
       void loadThreadHistory(thread)
       // Bidirectional current-session sync: switch DSH's current session
@@ -973,6 +1067,23 @@ app.addEventListener('click', async event => {
     }
     if (button.dataset.action === 'show-thread' && thread !== undefined) { state.activeId = thread.id; state.mode = 'thread'; render(); void loadThreadHistory(thread) }
     if (button.dataset.action === 'show-canvas') { state.mode = 'canvas'; render() }
+    if (button.dataset.action === 'toggle-card-children' && button.dataset.card !== undefined) {
+      const cardId = button.dataset.card
+      const collapsing = !state.collapsedCardIds.has(cardId)
+      if (collapsing && state.workspace !== null) {
+        const allCards = conversationCards(state.workspace.threads)
+        const nextCollapsed = new Set(state.collapsedCardIds).add(cardId)
+        const visibleCards = conversationGraphView(allCards, nextCollapsed).cards
+        const visibleIds = new Set(visibleCards.map(card => card.id))
+        const draftParentId = draftPlacement(allCards)?.parent.id
+        if (draftParentId !== undefined && !visibleIds.has(draftParentId)) return setError('请先完成或取消正在编辑的追问或分支')
+        if (state.activeId !== null && !visibleCards.some(card => card.dshThreadId === state.activeId)) return setError('当前会话位于这个后续分支中，请先切换会话')
+      }
+      collapsing ? state.collapsedCardIds.add(cardId) : state.collapsedCardIds.delete(cardId)
+      persistCollapsedCards()
+      render()
+      window.setTimeout(() => document.querySelector(`[data-action="toggle-card-children"][data-card="${selectorValue(cardId)}"]`)?.focus(), 0)
+    }
     if (button.dataset.action === 'open-continue' && thread !== undefined) openContinue(thread, button.dataset.card)
     if (button.dataset.action === 'open-branch' && thread !== undefined) {
       const requestedSeq = Number(button.dataset.seq)
@@ -1051,7 +1162,10 @@ window.addEventListener('message', event => {
     const previousId = state.currentDsh?.id
     state.currentDsh = data.session
     const thread = currentDshThread()
-    if (thread !== undefined) state.activeId = thread.id
+    if (thread !== undefined) {
+      state.activeId = thread.id
+      if (state.workspace !== null) revealConversationThread(conversationCards(state.workspace.threads), thread.id)
+    }
     if (previousId !== data.session?.id) void openCurrentWorkspace().then(opened => { if (!opened && canReplaceView()) render() }).catch(setError)
     else if (canReplaceView()) render()
   }
