@@ -48,6 +48,169 @@ function rememberBranchAnchor(sessionId, cardId) {
   try { localStorage.setItem('dsh-synapse:branch-anchors', JSON.stringify([...state.branchAnchors])) } catch { /* Private browsing may disable local storage. */ }
 }
 
+function normalizeTurnText(text) {
+  if (typeof text !== 'string') return ''
+  return text.trim().replace(/\r\n/g, '\n').replace(/\s+/g, ' ')
+}
+
+function sessionUserTurns(messages) {
+  if (!Array.isArray(messages)) return []
+  return messages.filter(m => m && m.kind === 'user' && normalizeTurnText(m.text) !== '')
+}
+
+/**
+ * Auto-repair broken parent-child connections across all sessions in the workspace.
+ * Evaluates conversation context turns and metadata, ensuring branch connections
+ * are restored accurately even across reloads or when parent IDs were lost/out of sync.
+ */
+async function repairWorkspaceSessionConnections() {
+  if (!state.workspace?.threads || state.workspace.threads.length === 0) return false
+
+  const threads = state.workspace.threads
+  const threadIds = new Set(threads.map(t => t.id))
+  let changed = false
+  const result = new Map()
+
+  for (const thread of threads) {
+    const ownMsgs = thread.messages ?? []
+    const ownTurns = sessionUserTurns(ownMsgs)
+
+    let resolvedParentId = null
+    let resolvedAnchorCardId = null
+    let resolvedSeedLength = Number.isSafeInteger(thread.sourceSeedLength) ? thread.sourceSeedLength : null
+
+    // Strategy 1 (Highest priority): Find best context match based on user dialogue turns
+    let bestContextParent = null
+    let bestMatchCount = 0
+    let bestForkParentTurn = null
+    let bestFirstOwnTurn = null
+
+    for (const other of threads) {
+      if (other.id === thread.id) continue
+      const otherTurns = sessionUserTurns(other.messages ?? [])
+      if (otherTurns.length === 0) continue
+
+      let matchCount = 0
+      while (matchCount < ownTurns.length && matchCount < otherTurns.length) {
+        if (normalizeTurnText(ownTurns[matchCount].text) === normalizeTurnText(otherTurns[matchCount].text)) {
+          matchCount++
+        } else {
+          break
+        }
+      }
+
+      if (matchCount > 0 && matchCount > bestMatchCount) {
+        if (matchCount < ownTurns.length || otherTurns.length <= ownTurns.length) {
+          bestMatchCount = matchCount
+          bestContextParent = other
+          bestForkParentTurn = otherTurns[matchCount - 1]
+          bestFirstOwnTurn = ownTurns[matchCount]
+        }
+      }
+    }
+
+    if (bestContextParent !== null && bestMatchCount >= 1) {
+      resolvedParentId = bestContextParent.id
+      if (bestFirstOwnTurn && Number.isInteger(bestFirstOwnTurn.sourceSeq)) {
+        resolvedSeedLength = bestFirstOwnTurn.sourceSeq
+      }
+      if (bestForkParentTurn) {
+        resolvedAnchorCardId = `${bestContextParent.id}:turn:${bestForkParentTurn.sourceSeq ?? (bestMatchCount - 1)}`
+      }
+    } else if (ownTurns.length === 0) {
+      if (thread.parentId && threadIds.has(thread.parentId) && thread.parentId !== thread.id) {
+        resolvedParentId = thread.parentId
+      }
+    } else {
+      resolvedParentId = null
+      resolvedSeedLength = null
+      resolvedAnchorCardId = null
+    }
+
+    // When parent session is determined, deduce the exact anchor card from the parent's turns
+    if (resolvedParentId && threadIds.has(resolvedParentId)) {
+      const parentThread = threads.find(t => t.id === resolvedParentId)
+      const parentTurns = sessionUserTurns(parentThread?.messages ?? [])
+
+      if (!resolvedAnchorCardId && parentTurns.length > 0) {
+        let matchK = 0
+        while (matchK < ownTurns.length && matchK < parentTurns.length) {
+          if (normalizeTurnText(ownTurns[matchK].text) === normalizeTurnText(parentTurns[matchK].text)) {
+            matchK++
+          } else {
+            break
+          }
+        }
+        if (matchK > 0) {
+          const forkTurn = parentTurns[matchK - 1]
+          resolvedAnchorCardId = `${resolvedParentId}:turn:${forkTurn.sourceSeq ?? (matchK - 1)}`
+          const firstOwn = ownTurns[matchK]
+          if (firstOwn && Number.isInteger(firstOwn.sourceSeq)) {
+            resolvedSeedLength = firstOwn.sourceSeq
+          }
+        } else {
+          const lastParentTurn = parentTurns.at(-1)
+          resolvedAnchorCardId = `${resolvedParentId}:turn:${lastParentTurn.sourceSeq ?? (parentTurns.length - 1)}`
+        }
+      }
+
+      result.set(thread.id, {
+        parentId: resolvedParentId,
+        sourceSeedLength: resolvedSeedLength,
+        anchorCardId: resolvedAnchorCardId,
+      })
+    } else {
+      result.set(thread.id, {
+        parentId: null,
+        sourceSeedLength: null,
+        anchorCardId: null,
+      })
+    }
+  }
+
+  // Cycle guard
+  for (const [threadId, info] of result.entries()) {
+    const visited = new Set([threadId])
+    let curr = info
+    while (curr?.parentId) {
+      if (visited.has(curr.parentId)) {
+        info.parentId = null
+        info.sourceSeedLength = null
+        info.anchorCardId = null
+        break
+      }
+      visited.add(curr.parentId)
+      curr = result.get(curr.parentId)
+    }
+  }
+
+  // Apply repaired state and branch anchors
+  for (const thread of threads) {
+    const target = result.get(thread.id)
+    if (!target) continue
+
+    if (thread.parentId !== target.parentId) {
+      thread.parentId = target.parentId
+      changed = true
+    }
+
+    if (thread.sourceSeedLength !== target.sourceSeedLength) {
+      thread.sourceSeedLength = target.sourceSeedLength
+      changed = true
+    }
+
+    if (target.anchorCardId) {
+      state.branchAnchors.set(thread.id, target.anchorCardId)
+    } else {
+      state.branchAnchors.delete(thread.id)
+    }
+  }
+
+  try { localStorage.setItem('dsh-synapse:branch-anchors', JSON.stringify([...state.branchAnchors])) } catch { /* ignore */ }
+
+  return changed
+}
+
 function persistCardPositions() {
   try { localStorage.setItem(CARD_POSITIONS_KEY, JSON.stringify([...state.cardPositions])) } catch { /* Private browsing may disable local storage. */ }
 }
@@ -882,7 +1045,7 @@ function render() {
   const view = state.mode === 'thread' ? renderThread() : renderCanvas()
   const choices = workspaceChoices()
   const selectedWorkspaceId = state.selectedDshWorkspaceId ?? workspace?.id
-  const canvasControls = state.mode === 'canvas' && (threads.length > 0 || state.draft?.kind === 'new') ? `<div class="canvas-controls"><button data-action="layout">整理节点</button><button data-action="focus-active" title="定位到当前会话">定位</button><button data-action="zoom-out" aria-label="缩小">-</button><span>${Math.round(state.zoom * 100)}%</span><button data-action="zoom-in" aria-label="放大">+</button></div>` : ''
+  const canvasControls = state.mode === 'canvas' && (threads.length > 0 || state.draft?.kind === 'new') ? `<div class="canvas-controls"><button data-action="layout" title="整理节点：自动修复分支连接并重排卡片">整理节点</button><button data-action="focus-active" title="定位到当前会话">定位</button><button data-action="zoom-out" aria-label="缩小">-</button><span>${Math.round(state.zoom * 100)}%</span><button data-action="zoom-in" aria-label="放大">+</button></div>` : ''
   const detailAvailable = currentThread() !== null
   const canvasTabs = `<nav class="canvas-tabs" aria-label="会话地图视图"><button class="${state.mode === 'canvas' ? 'active' : ''}" data-action="show-canvas">地图</button><button class="${state.mode === 'thread' ? 'active' : ''}" data-action="show-thread" data-thread="${state.activeId ?? ''}" ${detailAvailable ? '' : 'disabled'}>详情</button></nav>`
   app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><label class="workspace-label"><span>工作区</span><span class="workspace-select"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2.5 4.75h3l1.2 1.5h6.8v5.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"/></svg><select data-action="select-workspace" aria-label="选择工作区" ${state.draft !== null ? 'disabled' : ''}>${choices.map(item => `<option value="${item.id}" title="${escapeHtml(item.path ?? item.title)}" ${item.id === selectedWorkspaceId ? 'selected' : ''}>${escapeHtml(item.title)}</option>`).join('')}</select></span></label><div class="sidebar-heading"><span>会话</span></div><nav class="thread-tree">${threads.map(thread => `<button class="tree-row ${thread.id === state.activeId ? 'active' : ''}" data-action="select-thread" data-thread="${thread.id}" style="--thread-color:#374151"><span class="tree-dot"></span><span>${escapeHtml(threadListTitle(thread))}</span>${thread.parentId === null ? '' : '<i>分支</i>'}</button>`).join('') || '<p class="tree-empty">暂未同步会话</p>'}</nav></aside><header class="topbar"><div class="view-switch" role="group" aria-label="视图切换"><button data-action="close" type="button" aria-pressed="false">对话</button><button class="active" type="button" aria-pressed="true">会话地图</button></div>${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message" role="alert"><span>${escapeHtml(state.error)}</span><button data-action="dismiss-error" aria-label="关闭" title="关闭">×</button></div>` : ''}${canvasTabs}${view}</section></main>`
@@ -1111,6 +1274,7 @@ app.addEventListener('click', async event => {
     if (button.dataset.action === 'focus-active') focusActiveCard()
     if (button.dataset.action === 'dismiss-error') { state.error = ''; render() }
     if (button.dataset.action === 'layout' && state.workspace !== null) {
+      await repairWorkspaceSessionConnections()
       resetCardPositions()
       resetCanvasCamera()
       render()

@@ -228,3 +228,57 @@ test('prunes persisted collapsed state when a conversation is archived', async (
   assert.match(archive, /key\.startsWith\(`\$\{id\}:`\)/)
   assert.match(archive, /persistCollapsedCards\(\)/)
 })
+
+test('layout button automatically repairs broken parent-child connections', async () => {
+  const app = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+
+  // Button triggers connection repair before resetting positions and re-rendering
+  assert.match(app, /if \(button\.dataset\.action === 'layout' && state\.workspace !== null\)/)
+  assert.match(app, /await repairWorkspaceSessionConnections\(\)/)
+  assert.match(app, /async function repairWorkspaceSessionConnections\(\)/)
+
+  // Test the repair function logic with VM
+  const vm = await import('node:vm')
+  const context = {
+    globalThis: {},
+    state: {
+      workspace: {
+        id: 'w1',
+        title: '工作区',
+        threads: [
+          { id: 'parent-1', title: '父会话', parentId: null, messages: [{ kind: 'user', text: '你好', sourceSeq: 1 }, { kind: 'assistant', text: '你好！', sourceSeq: 2 }] },
+          { id: 'child-1', title: '子分支1', parentId: 'wrong-id', messages: [{ kind: 'user', text: '你好', sourceSeq: 1 }, { kind: 'assistant', text: '你好！', sourceSeq: 2 }, { kind: 'user', text: '分支1问题', sourceSeq: 3 }] },
+          { id: 'child-2', title: '子分支2', parentId: null, messages: [{ kind: 'user', text: '你好', sourceSeq: 1 }, { kind: 'assistant', text: '你好！', sourceSeq: 2 }, { kind: 'user', text: '分支2问题', sourceSeq: 4 }] },
+          { id: 'isolated-3', title: '独立话题', parentId: 'parent-1', messages: [{ kind: 'user', text: '今天天气', sourceSeq: 1 }, { kind: 'assistant', text: '晴天', sourceSeq: 2 }] },
+        ],
+      },
+      cardPositions: new Map(),
+      branchAnchors: new Map(),
+    },
+  }
+  vm.createContext(context)
+
+  const fnStart = app.indexOf('function normalizeTurnText')
+  const fnEnd = app.indexOf('function persistCardPositions()')
+  const fnCode = app.slice(fnStart, fnEnd)
+
+  vm.runInContext(`${fnCode}; globalThis.repair = repairWorkspaceSessionConnections`, context)
+  const changed = await context.globalThis.repair()
+
+  assert.equal(changed, true)
+  const threads = context.state.workspace.threads
+  // child-1 repaired from wrong-id to parent-1 based on context prefix
+  assert.equal(threads.find(t => t.id === 'child-1').parentId, 'parent-1')
+  assert.equal(threads.find(t => t.id === 'child-1').sourceSeedLength, 3)
+  assert.equal(context.state.branchAnchors.get('child-1'), 'parent-1:turn:1')
+
+  // child-2 linked to parent-1 based on context prefix
+  assert.equal(threads.find(t => t.id === 'child-2').parentId, 'parent-1')
+  assert.equal(threads.find(t => t.id === 'child-2').sourceSeedLength, 4)
+  assert.equal(context.state.branchAnchors.get('child-2'), 'parent-1:turn:1')
+
+  // isolated-3 has no shared turns with parent-1 -> disconnected to root
+  assert.equal(threads.find(t => t.id === 'isolated-3').parentId, null)
+  assert.equal(threads.find(t => t.id === 'isolated-3').sourceSeedLength, null)
+  assert.equal(context.state.branchAnchors.has('isolated-3'), false)
+})
