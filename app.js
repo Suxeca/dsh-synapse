@@ -55,7 +55,12 @@ function normalizeTurnText(text) {
 
 function sessionUserTurns(messages) {
   if (!Array.isArray(messages)) return []
-  return messages.filter(m => m && m.kind === 'user' && normalizeTurnText(m.text) !== '')
+  return messages.flatMap((m, index) => (m && m.kind === 'user' && normalizeTurnText(m.text) !== '') ? [{ ...m, messageIndex: index }] : [])
+}
+
+function cardIdForTurn(threadId, turn) {
+  if (!turn) return null
+  return `${threadId}:turn:${turn.sourceSeq ?? turn.messageIndex ?? 0}`
 }
 
 /**
@@ -115,7 +120,7 @@ async function repairWorkspaceSessionConnections() {
         resolvedSeedLength = bestFirstOwnTurn.sourceSeq
       }
       if (bestForkParentTurn) {
-        resolvedAnchorCardId = `${bestContextParent.id}:turn:${bestForkParentTurn.sourceSeq ?? (bestMatchCount - 1)}`
+        resolvedAnchorCardId = cardIdForTurn(bestContextParent.id, bestForkParentTurn)
       }
     } else if (ownTurns.length === 0) {
       if (thread.parentId && threadIds.has(thread.parentId) && thread.parentId !== thread.id) {
@@ -143,14 +148,14 @@ async function repairWorkspaceSessionConnections() {
         }
         if (matchK > 0) {
           const forkTurn = parentTurns[matchK - 1]
-          resolvedAnchorCardId = `${resolvedParentId}:turn:${forkTurn.sourceSeq ?? (matchK - 1)}`
+          resolvedAnchorCardId = cardIdForTurn(resolvedParentId, forkTurn)
           const firstOwn = ownTurns[matchK]
           if (firstOwn && Number.isInteger(firstOwn.sourceSeq)) {
             resolvedSeedLength = firstOwn.sourceSeq
           }
         } else {
           const lastParentTurn = parentTurns.at(-1)
-          resolvedAnchorCardId = `${resolvedParentId}:turn:${lastParentTurn.sourceSeq ?? (parentTurns.length - 1)}`
+          resolvedAnchorCardId = cardIdForTurn(resolvedParentId, lastParentTurn)
         }
       }
 
@@ -199,10 +204,15 @@ async function repairWorkspaceSessionConnections() {
       changed = true
     }
 
+    const previousAnchor = state.branchAnchors.get(thread.id)
     if (target.anchorCardId) {
-      state.branchAnchors.set(thread.id, target.anchorCardId)
-    } else {
+      if (previousAnchor !== target.anchorCardId) {
+        state.branchAnchors.set(thread.id, target.anchorCardId)
+        changed = true
+      }
+    } else if (previousAnchor !== undefined) {
       state.branchAnchors.delete(thread.id)
+      changed = true
     }
   }
 
