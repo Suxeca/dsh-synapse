@@ -449,11 +449,22 @@ function markdownBlock(text) {
   return output.join('')
 }
 
+// Markdown parsing is pure CPU and repeats for every card on every canvas
+// rebuild; cache the rendered HTML by input text so stable answers are never
+// re-parsed. Bounded: streaming partial texts churn keys, so evict oldest.
+const markdownCache = new Map()
+const MARKDOWN_CACHE_LIMIT = 500
 function renderMarkdown(text) {
-  const parts = String(text).split(/```/)
-  return parts.map((part, index) => index % 2 === 1
+  const key = String(text)
+  const cached = markdownCache.get(key)
+  if (cached !== undefined) return cached
+  const parts = key.split(/```/)
+  const rendered = parts.map((part, index) => index % 2 === 1
     ? `<pre><code>${escapeHtml(part.replace(/^\w*\n/, ''))}</code></pre>`
     : markdownBlock(part)).join('')
+  if (markdownCache.size >= MARKDOWN_CACHE_LIMIT) markdownCache.delete(markdownCache.keys().next().value)
+  markdownCache.set(key, rendered)
+  return rendered
 }
 
 function overlapsCard(position, other) {
@@ -1172,9 +1183,18 @@ window.addEventListener('message', event => {
   if (data.type === 'synapse:live-reply' && typeof data.sessionId === 'string') {
     const thread = state.workspace?.threads.find(item => item.dshSessionId === data.sessionId)
     if (thread !== undefined) {
-      if (data.running === true) state.liveReplies.set(data.sessionId, { running: true, text: typeof data.text === 'string' ? data.text : '' })
-      else state.liveReplies.delete(data.sessionId)
-      if (canReplaceView() || state.pendingReplies.has(data.sessionId)) scheduleLiveRender()
+      if (data.running === true) {
+        state.liveReplies.set(data.sessionId, { running: true, text: typeof data.text === 'string' ? data.text : '' })
+        // Streaming: patch the live card's answer in place instead of
+        // rebuilding the whole canvas on every chunk; a full render reconciles
+        // at stream end. The detail view is single-thread, so keep its cheap
+        // throttled full render.
+        if (state.mode === 'canvas') scheduleLiveCardUpdate(data.sessionId)
+        else if (canReplaceView()) scheduleLiveRender()
+      } else {
+        state.liveReplies.delete(data.sessionId)
+        if (canReplaceView() || state.pendingReplies.has(data.sessionId)) renderPreservingDetailScroll()
+      }
     }
   }
   if (data.type === 'synapse:forked-session' || data.type === 'synapse:created-session' || data.type === 'synapse:message-sent') settleRpc(data.requestId, data.session ?? data)
@@ -1185,6 +1205,36 @@ post('synapse:request-current')
 refreshSummaries().catch(setError)
 let polling = false
 let liveRenderTimer = 0
+let liveCardFrame = 0
+let liveCardSessionId = null
+function scheduleLiveCardUpdate(sessionId) {
+  // Coalesce streaming chunks to one DOM patch per animation frame.
+  liveCardSessionId = sessionId
+  if (liveCardFrame !== 0) return
+  liveCardFrame = window.requestAnimationFrame(() => {
+    liveCardFrame = 0
+    if (liveCardSessionId === null) return
+    const id = liveCardSessionId
+    liveCardSessionId = null
+    applyLiveReplyToCard(id)
+  })
+}
+function applyLiveReplyToCard(sessionId) {
+  if (state.mode !== 'canvas') return
+  const thread = state.workspace?.threads.find(item => item.dshSessionId === sessionId)
+  if (thread === undefined) return
+  const live = state.liveReplies.get(sessionId)
+  if (live?.running !== true) return
+  const cards = app.querySelectorAll(`.thread-card[data-thread="${CSS.escape(thread.id)}"]`)
+  const card = cards[cards.length - 1]
+  if (!(card instanceof HTMLElement)) return
+  const answer = card.querySelector('.thread-answer')
+  if (!(answer instanceof HTMLElement)) return
+  const text = live.text
+  answer.innerHTML = text.trim() === ''
+    ? '<p class="thread-answer-pending">正在回复</p>'
+    : `${renderMarkdown(text)}<p class="thread-answer-pending">正在回复</p>`
+}
 function scheduleLiveRender() {
   if (liveRenderTimer !== 0 || !canReplaceView()) return
   liveRenderTimer = window.setTimeout(() => {

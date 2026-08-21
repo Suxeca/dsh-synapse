@@ -133,6 +133,17 @@ test('leaves text selections inside cards intact', async () => {
   assert.match(source, /pointerDownPosition = \{ x: event\.clientX/)
 })
 
+test('caches markdown rendering and patches the live card without a full render', async () => {
+  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const live = source.slice(source.indexOf('function scheduleLiveCardUpdate'), source.indexOf('async function pollProjection'))
+
+  assert.match(source, /const markdownCache = new Map\(\)/)
+  assert.match(source, /MARKDOWN_CACHE_LIMIT/)
+  assert.match(source, /function scheduleLiveCardUpdate/)
+  assert.match(live, /function applyLiveReplyToCard/)
+  assert.match(live, /requestAnimationFrame/)
+})
+
 test('renders a follow-up plus on final cards and fold plus branch controls on non-final cards', async () => {
   const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
   const card = source.slice(source.indexOf('function conversationCard'), source.indexOf('function draftActions'))
