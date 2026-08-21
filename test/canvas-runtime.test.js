@@ -282,3 +282,25 @@ test('layout button automatically repairs broken parent-child connections', asyn
   assert.equal(threads.find(t => t.id === 'isolated-3').sourceSeedLength, null)
   assert.equal(context.state.branchAnchors.has('isolated-3'), false)
 })
+
+test('renders and persists card notes and opens context menu on right click', async () => {
+  const app = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8')
+
+  // Context menu on right click
+  assert.match(app, /app\.addEventListener\('contextmenu',/)
+  assert.match(app, /renderContextMenu\(\)/)
+  assert.match(styles, /\.synapse-context-menu/)
+
+  // Card note persistence and display
+  assert.match(app, /const CARD_NOTES_KEY = 'dsh-synapse:card-notes:v1'/)
+  assert.match(app, /function rememberCardNote\(cardId, note\)/)
+  assert.match(app, /function removeCardNote\(cardId\)/)
+  assert.match(app, /class="thread-card-note"/)
+  assert.match(styles, /\.thread-card-note/)
+
+  // Note modal dialog
+  assert.match(app, /function renderNoteModal\(\)/)
+  assert.match(app, /data-note-form/)
+  assert.match(styles, /\.note-modal/)
+})
