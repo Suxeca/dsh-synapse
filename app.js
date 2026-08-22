@@ -1115,8 +1115,17 @@ function draftCard(cards) {
 const MINIMAP_WIDTH = 180
 const MINIMAP_HEIGHT = 115
 
+function getMinimapDimensions() {
+  const isMobile = (globalThis.innerWidth ?? window.innerWidth ?? 0) <= 560
+  return {
+    width: isMobile ? 145 : MINIMAP_WIDTH,
+    height: isMobile ? 96 : MINIMAP_HEIGHT,
+  }
+}
+
 function getMinimapMetrics(cards) {
   if (!Array.isArray(cards) || cards.length === 0) return null
+  const { width: minimapW, height: minimapH } = getMinimapDimensions()
   const PADDING = 140
   const minX = Math.min(...cards.map(c => c.position.x)) - PADDING
   const maxX = Math.max(...cards.map(c => c.position.x + CARD_WIDTH)) + PADDING
@@ -1125,9 +1134,9 @@ function getMinimapMetrics(cards) {
   const worldWidth = Math.max(800, maxX - minX)
   const worldHeight = Math.max(600, maxY - minY)
 
-  const scale = Math.min(MINIMAP_WIDTH / worldWidth, MINIMAP_HEIGHT / worldHeight)
-  const offsetX = (MINIMAP_WIDTH - worldWidth * scale) / 2
-  const offsetY = (MINIMAP_HEIGHT - worldHeight * scale) / 2
+  const scale = Math.min(minimapW / worldWidth, minimapH / worldHeight)
+  const offsetX = (minimapW - worldWidth * scale) / 2
+  const offsetY = (minimapH - worldHeight * scale) / 2
 
   const vp = document.querySelector('.canvas-viewport')
   const vpWidth = vp instanceof HTMLElement ? vp.clientWidth : (window.innerWidth || 1000)
