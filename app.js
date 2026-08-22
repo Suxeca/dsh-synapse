@@ -45,7 +45,7 @@ const state = {
   dshWorkspaces: [], selectedDshWorkspaceId: null,
   historyBySession: new Map(), historyRequests: new Map(), pendingReplies: new Map(), pendingRpc: new Map(), liveReplies: new Map(),
   draft: null, error: '', workspaceLoad: 0, branchAnchors: new Map(savedBranchAnchors), cardPositions: new Map(savedCardPositions), collapsedCardIds: new Set(savedCollapsedCards),
-  cardNotes: new Map(savedCardNotes), editingNoteCardId: null, contextMenu: null, minimapCollapsed: minimapCollapsedFromStorage,
+  cardNotes: new Map(savedCardNotes), editingNoteCardId: null, contextMenu: null, minimapCollapsed: minimapCollapsedFromStorage, exportModalOpen: false,
   dragging: false, canvasGesture: false, canvasRefreshAfter: 0, canvasViewInitialized: false, canvasCamera: { x: 0, y: 0 },
   expandedMessageIds: new Set(),
 }
@@ -1058,6 +1058,281 @@ function renderNoteModal() {
   </div>`
 }
 
+function generateMapSvg(cards, notesMap = new Map()) {
+  if (!cards || cards.length === 0) return ''
+  const PADDING = 60
+  const minX = Math.min(...cards.map(c => c.position.x)) - PADDING
+  const maxX = Math.max(...cards.map(c => c.position.x + CARD_WIDTH)) + PADDING
+  const minY = Math.min(...cards.map(c => c.position.y)) - PADDING
+  const maxY = Math.max(...cards.map(c => c.position.y + CARD_HEIGHT)) + PADDING
+  const width = Math.max(400, Math.round(maxX - minX))
+  const height = Math.max(300, Math.round(maxY - minY))
+
+  const index = new Map(cards.map(card => [card.id, card]))
+  const paths = cards.map(card => {
+    const parent = card.parentId === null ? null : index.get(card.parentId)
+    if (!parent) return ''
+    const pPos = { x: parent.position.x - minX, y: parent.position.y - minY }
+    const cPos = { x: card.position.x - minX, y: card.position.y - minY }
+    return `<path d="${connectorPath(pPos, cPos)}" fill="none" stroke="#94a3b8" stroke-width="2"/>`
+  }).join('')
+
+  const cardElements = cards.map(card => {
+    const x = Math.round(card.position.x - minX)
+    const y = Math.round(card.position.y - minY)
+    const note = notesMap.get(card.id) ?? ''
+    const question = escapeHtml(card.question || '对话节点')
+    const rawAnswer = card.answer?.text ? card.answer.text.replace(/\s+/g, ' ').trim() : '等待回答...'
+    const answer = escapeHtml(rawAnswer.slice(0, 160) + (rawAnswer.length > 160 ? '...' : ''))
+
+    const noteSvg = note ? `<rect x="${x + 12}" y="${y + 44}" width="${CARD_WIDTH - 24}" height="22" rx="4" fill="#fefce8" stroke="#fef08a"/><text x="${x + 20}" y="${y + 59}" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#854d0e">📌 ${escapeHtml(note.slice(0, 26))}</text>` : ''
+
+    return `<g class="card-group">
+      <rect x="${x}" y="${y}" width="${CARD_WIDTH}" height="${CARD_HEIGHT}" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+      <rect x="${x}" y="${y}" width="${CARD_WIDTH}" height="38" rx="10" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+      <circle cx="${x + 18}" cy="${y + 19}" r="4.5" fill="#3b82f6"/>
+      <text x="${x + 32}" y="${y + 24}" font-family="system-ui, sans-serif" font-size="13" font-weight="700" fill="#1e293b">${question.slice(0, 22)}</text>
+      ${noteSvg}
+      <foreignObject x="${x + 12}" y="${y + (note ? 72 : 46)}" width="${CARD_WIDTH - 24}" height="${CARD_HEIGHT - (note ? 80 : 54)}">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="font-family:system-ui,sans-serif;font-size:12px;color:#475569;line-height:1.5;overflow:hidden;word-break:break-word;">
+          ${answer}
+        </div>
+      </foreignObject>
+    </g>`
+  }).join('')
+
+  return `<?xml version="1.0" encoding="utf-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" style="background:#f8fafc;">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; }
+  </style>
+  <g class="connectors-layer">${paths}</g>
+  <g class="cards-layer">${cardElements}</g>
+</svg>`
+}
+
+function renderExportModal() {
+  if (!state.exportModalOpen) return ''
+  const threads = state.workspace?.threads ?? []
+  const cards = conversationCards(threads)
+  const sessionCount = threads.length
+  const cardCount = cards.length
+  const noteCount = state.cardNotes.size
+  return `<div class="export-modal" role="dialog" aria-modal="true" aria-labelledby="export-modal-title">
+    <div class="export-modal-backdrop" data-action="close-export-modal"></div>
+    <div class="export-modal-sheet">
+      <header>
+        <div class="export-modal-header-title">
+          <svg class="export-modal-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V10.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/></svg>
+          <h3 id="export-modal-title">导出地图资产</h3>
+        </div>
+        <button type="button" class="export-modal-close" data-action="close-export-modal" aria-label="关闭">×</button>
+      </header>
+      <div class="export-modal-body">
+        <div class="export-summary-badge">
+          <span>包含 <strong>${sessionCount}</strong> 个会话 · <strong>${cardCount}</strong> 张卡片 · <strong>${noteCount}</strong> 条备注</span>
+        </div>
+        <div class="export-options-grid">
+          <button type="button" class="export-card-btn primary" data-action="export-synapse-archive">
+            <div class="export-btn-icon archive">📦</div>
+            <div class="export-btn-content">
+              <strong>.synapse 全量自包含地图包</strong>
+              <small>包含拓扑、卡片坐标、便签与全量对话日志，可随时在任意设备 100% 导入复原</small>
+            </div>
+          </button>
+          <button type="button" class="export-card-btn" data-action="export-map-svg">
+            <div class="export-btn-icon svg">🖼️</div>
+            <div class="export-btn-content">
+              <strong>.svg 矢量高清全景图</strong>
+              <small>清晰矢量图，无限放大不失真，适合文档插入、PPT 演示与工程打印</small>
+            </div>
+          </button>
+          <button type="button" class="export-card-btn" data-action="export-map-png">
+            <div class="export-btn-icon png">📸</div>
+            <div class="export-btn-content">
+              <strong>.png 超清全景长图</strong>
+              <small>生成高清位图图片，适合发送至即时通信群聊或进行工作汇报</small>
+            </div>
+          </button>
+        </div>
+      </div>
+      <footer>
+        <button type="button" class="export-btn-close" data-action="close-export-modal">取消</button>
+      </footer>
+    </div>
+  </div>`
+}
+
+function exportSynapseArchive() {
+  const threads = state.workspace?.threads ?? []
+  const archive = {
+    format: 'dsh-synapse-archive',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    title: threads[0]?.dshSessionTitle ?? threads[0]?.title ?? 'Synapse Conversation Map',
+    sessions: threads.map(t => ({
+      id: t.id,
+      title: t.title ?? null,
+      parentId: t.parentId ?? null,
+      sourceSeedLength: t.sourceSeedLength ?? null,
+      messages: Array.isArray(t.messages) ? t.messages : [],
+    })),
+    cardPositions: [...state.cardPositions.entries()],
+    cardNotes: [...state.cardNotes.entries()],
+    branchAnchors: [...state.branchAnchors.entries()],
+    camera: { ...state.canvasCamera, zoom: state.zoom },
+  }
+
+  const blob = new Blob([JSON.stringify(archive, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  const timestamp = new Date().toISOString().slice(0, 10)
+  const rawTitle = threads[0]?.dshSessionTitle ?? threads[0]?.title ?? 'map'
+  const cleanTitle = rawTitle.replace(/[\\/:*?"<>|]/g, '-').slice(0, 24)
+  a.href = url
+  a.download = `${cleanTitle}-${timestamp}.synapse`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  state.exportModalOpen = false
+  render()
+}
+
+function exportMapAsSvg() {
+  const threads = state.workspace?.threads ?? []
+  const cards = conversationCards(threads)
+  if (cards.length === 0) return setError('当前地图没有卡片可导出')
+  const svgText = generateMapSvg(cards, state.cardNotes)
+  const blob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  const timestamp = new Date().toISOString().slice(0, 10)
+  a.href = url
+  a.download = `synapse-map-${timestamp}.svg`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  state.exportModalOpen = false
+  render()
+}
+
+function exportMapAsPng() {
+  const threads = state.workspace?.threads ?? []
+  const cards = conversationCards(threads)
+  if (cards.length === 0) return setError('当前地图没有卡片可导出')
+  const svgText = generateMapSvg(cards, state.cardNotes)
+  const blob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const img = new Image()
+  img.onload = () => {
+    try {
+      const canvas = document.createElement('canvas')
+      const scaleFactor = 2
+      canvas.width = img.width * scaleFactor
+      canvas.height = img.height * scaleFactor
+      const ctx = canvas.getContext('2d')
+      if (ctx) {
+        ctx.scale(scaleFactor, scaleFactor)
+        ctx.drawImage(img, 0, 0)
+        canvas.toBlob(pngBlob => {
+          if (!pngBlob) return
+          const pngUrl = URL.createObjectURL(pngBlob)
+          const a = document.createElement('a')
+          const timestamp = new Date().toISOString().slice(0, 10)
+          a.href = pngUrl
+          a.download = `synapse-map-${timestamp}.png`
+          document.body.appendChild(a)
+          a.click()
+          document.body.removeChild(a)
+          URL.revokeObjectURL(pngUrl)
+        }, 'image/png')
+      }
+    } finally {
+      URL.revokeObjectURL(url)
+      state.exportModalOpen = false
+      render()
+    }
+  }
+  img.onerror = () => {
+    URL.revokeObjectURL(url)
+    exportMapAsSvg()
+  }
+  img.src = url
+}
+
+async function importSynapseArchive(rawContent) {
+  try {
+    const data = typeof rawContent === 'string' ? JSON.parse(rawContent) : rawContent
+    if (!data || typeof data !== 'object') throw new Error('无效的地图文件格式')
+
+    const sessions = Array.isArray(data.sessions) ? data.sessions : []
+    if (sessions.length === 0) throw new Error('地图文件中没有包含任何会话')
+
+    if (state.workspace) {
+      for (const session of sessions) {
+        if (session?.id) {
+          const existing = state.workspace.threads.find(t => t.id === session.id)
+          if (existing) {
+            existing.messages = Array.isArray(session.messages) ? session.messages : existing.messages
+            existing.title = session.title ?? existing.title
+            existing.parentId = session.parentId ?? existing.parentId
+            existing.sourceSeedLength = session.sourceSeedLength ?? existing.sourceSeedLength
+          } else {
+            state.workspace.threads.push({
+              id: session.id,
+              title: session.title ?? '导入会话',
+              parentId: session.parentId ?? null,
+              sourceSeedLength: session.sourceSeedLength ?? null,
+              dshSessionId: session.id,
+              dshSessionTitle: session.title ?? null,
+              color: '#3478f6',
+              position: { x: 86, y: 82 },
+              messages: Array.isArray(session.messages) ? session.messages : [],
+            })
+          }
+        }
+      }
+    }
+
+    if (Array.isArray(data.cardPositions)) {
+      for (const item of data.cardPositions) {
+        if (Array.isArray(item) && typeof item[0] === 'string' && item[1]) {
+          state.cardPositions.set(item[0], item[1])
+        }
+      }
+      persistCardPositions()
+    }
+
+    if (Array.isArray(data.cardNotes)) {
+      for (const item of data.cardNotes) {
+        if (Array.isArray(item) && typeof item[0] === 'string' && typeof item[1] === 'string') {
+          state.cardNotes.set(item[0], item[1].trim())
+        }
+      }
+      persistCardNotes()
+    }
+
+    if (Array.isArray(data.branchAnchors)) {
+      for (const item of data.branchAnchors) {
+        if (Array.isArray(item) && typeof item[0] === 'string' && typeof item[1] === 'string') {
+          state.branchAnchors.set(item[0], item[1])
+        }
+      }
+      try { localStorage.setItem('dsh-synapse:branch-anchors', JSON.stringify([...state.branchAnchors])) } catch { /* ignore */ }
+    }
+
+    state.activeId = sessions[0] ? sessions[0].id : null
+    resetCanvasCamera()
+    render()
+    return true
+  } catch (err) {
+    setError(err instanceof Error ? err.message : String(err))
+    return false
+  }
+}
+
 function conversationCard(card, graph) {
   const active = card.dshThreadId === state.activeId ? 'active' : ''
   const source = card.parentId === null ? 'DSH 会话' : card.turnIndex === 0 ? 'DSH 分支' : '追问'
@@ -1302,10 +1577,11 @@ function render() {
   const view = state.mode === 'thread' ? renderThread() : renderCanvas()
   const choices = workspaceChoices()
   const selectedWorkspaceId = state.selectedDshWorkspaceId ?? workspace?.id
-  const canvasControls = state.mode === 'canvas' && (threads.length > 0 || state.draft?.kind === 'new') ? `<div class="canvas-controls"><button data-action="layout" title="整理节点：自动修复分支连接并重排卡片">整理节点</button><button data-action="focus-active" title="定位到当前会话">定位</button><button data-action="zoom-out" aria-label="缩小">-</button><span>${Math.round(state.zoom * 100)}%</span><button data-action="zoom-in" aria-label="放大">+</button></div>` : ''
+  const canvasTools = (threads.length > 0 || state.draft?.kind === 'new') ? `<button data-action="layout" title="整理节点：自动修复分支连接并重排卡片">整理节点</button><button data-action="focus-active" title="定位到当前会话">定位</button><button data-action="zoom-out" aria-label="缩小">-</button><span>${Math.round(state.zoom * 100)}%</span><button data-action="zoom-in" aria-label="放大">+</button><button data-action="open-export-modal" title="导出地图资产包或高清图片">导出</button><button data-action="trigger-import" title="导入 .synapse 地图资产包">导入</button>` : `<button data-action="trigger-import" title="导入 .synapse 地图资产包">导入地图</button>`
+  const canvasControls = state.mode === 'canvas' ? `<div class="canvas-controls">${canvasTools}</div>` : ''
   const detailAvailable = currentThread() !== null
   const canvasTabs = `<nav class="canvas-tabs" aria-label="会话地图视图"><button class="${state.mode === 'canvas' ? 'active' : ''}" data-action="show-canvas">地图</button><button class="${state.mode === 'thread' ? 'active' : ''}" data-action="show-thread" data-thread="${state.activeId ?? ''}" ${detailAvailable ? '' : 'disabled'}>详情</button></nav>`
-  app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><label class="workspace-label"><span>工作区</span><span class="workspace-select"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2.5 4.75h3l1.2 1.5h6.8v5.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"/></svg><select data-action="select-workspace" aria-label="选择工作区" ${state.draft !== null ? 'disabled' : ''}>${choices.map(item => `<option value="${item.id}" title="${escapeHtml(item.path ?? item.title)}" ${item.id === selectedWorkspaceId ? 'selected' : ''}>${escapeHtml(item.title)}</option>`).join('')}</select></span></label><div class="sidebar-heading"><span>会话</span></div><nav class="thread-tree">${threads.map(thread => `<button class="tree-row ${thread.id === state.activeId ? 'active' : ''}" data-action="select-thread" data-thread="${thread.id}" style="--thread-color:#374151"><span class="tree-dot"></span><span>${escapeHtml(threadListTitle(thread))}</span>${thread.parentId === null ? '' : '<i>分支</i>'}</button>`).join('') || '<p class="tree-empty">暂未同步会话</p>'}</nav></aside><header class="topbar"><div class="view-switch" role="group" aria-label="视图切换"><button data-action="close" type="button" aria-pressed="false">对话</button><button class="active" type="button" aria-pressed="true">会话地图</button></div>${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message" role="alert"><span>${escapeHtml(state.error)}</span><button data-action="dismiss-error" aria-label="关闭" title="关闭">×</button></div>` : ''}${canvasTabs}${view}</section>${renderNoteModal()}${renderContextMenu()}</main>`
+  app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><label class="workspace-label"><span>工作区</span><span class="workspace-select"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2.5 4.75h3l1.2 1.5h6.8v5.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"/></svg><select data-action="select-workspace" aria-label="选择工作区" ${state.draft !== null ? 'disabled' : ''}>${choices.map(item => `<option value="${item.id}" title="${escapeHtml(item.path ?? item.title)}" ${item.id === selectedWorkspaceId ? 'selected' : ''}>${escapeHtml(item.title)}</option>`).join('')}</select></span></label><div class="sidebar-heading"><span>会话</span></div><nav class="thread-tree">${threads.map(thread => `<button class="tree-row ${thread.id === state.activeId ? 'active' : ''}" data-action="select-thread" data-thread="${thread.id}" style="--thread-color:#374151"><span class="tree-dot"></span><span>${escapeHtml(threadListTitle(thread))}</span>${thread.parentId === null ? '' : '<i>分支</i>'}</button>`).join('') || '<p class="tree-empty">暂未同步会话</p>'}</nav></aside><header class="topbar"><div class="view-switch" role="group" aria-label="视图切换"><button data-action="close" type="button" aria-pressed="false">对话</button><button class="active" type="button" aria-pressed="true">会话地图</button></div>${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message" role="alert"><span>${escapeHtml(state.error)}</span><button data-action="dismiss-error" aria-label="关闭" title="关闭">×</button></div>` : ''}${canvasTabs}${view}</section>${renderNoteModal()}${renderContextMenu()}${renderExportModal()}<input type="file" class="synapse-file-input" accept=".synapse,.json" data-action="import-file-selected" style="display:none"></main>`
   installDragging()
   for (const [cardId, scrollTop] of cardScrollTops) {
     const answer = app.querySelector(`.thread-card[data-card-id="${CSS.escape(cardId)}"] .thread-answer`)
@@ -1507,6 +1783,7 @@ window.addEventListener('keydown', event => {
     let changed = false
     if (state.contextMenu !== null) { state.contextMenu = null; changed = true }
     if (state.editingNoteCardId !== null) { state.editingNoteCardId = null; changed = true }
+    if (state.exportModalOpen) { state.exportModalOpen = false; changed = true }
     if (changed) render()
     return
   }
@@ -1578,6 +1855,30 @@ app.addEventListener('click', async event => {
       state.editingNoteCardId = null
       render()
     }
+    if (button.dataset.action === 'open-export-modal') {
+      state.exportModalOpen = true
+      render()
+    }
+    if (button.dataset.action === 'close-export-modal') {
+      state.exportModalOpen = false
+      render()
+    }
+    if (button.dataset.action === 'export-synapse-archive') {
+      exportSynapseArchive()
+    }
+    if (button.dataset.action === 'export-map-svg') {
+      exportMapAsSvg()
+    }
+    if (button.dataset.action === 'export-map-png') {
+      exportMapAsPng()
+    }
+    if (button.dataset.action === 'trigger-import') {
+      const input = document.querySelector('.synapse-file-input')
+      if (input instanceof HTMLInputElement) {
+        input.value = ''
+        input.click()
+      }
+    }
     if (button.dataset.action === 'toggle-minimap') {
       state.minimapCollapsed = !state.minimapCollapsed
       try { localStorage.setItem(MINIMAP_COLLAPSED_KEY, String(state.minimapCollapsed)) } catch { /* ignore */ }
@@ -1629,7 +1930,20 @@ app.addEventListener('click', async event => {
   } catch (error) { setError(error) }
 })
 
-app.addEventListener('change', event => {
+app.addEventListener('change', async event => {
+  const input = event.target
+  if (input instanceof HTMLInputElement && input.dataset.action === 'import-file-selected') {
+    const file = input.files?.[0]
+    if (!file) return
+    try {
+      const text = await file.text()
+      await importSynapseArchive(text)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+    input.value = ''
+    return
+  }
   const select = event.target.closest('[data-action="select-workspace"]')
   if (!(select instanceof HTMLSelectElement)) return
   const choice = workspaceChoices().find(item => item.id === select.value)
