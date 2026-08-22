@@ -384,3 +384,26 @@ test('builds maximum spanning tree for multi-level deep branches and sibling for
   assert.equal(context.state.branchAnchors.get('siblingBranchC'), 'trunk:turn:19')
   assert.equal(threads.find(t => t.id === 'siblingBranchC').sourceSeedLength, 321)
 })
+
+test('renders canvas minimap navigator with interactive viewport bounding', async () => {
+  const app = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8')
+
+  // Minimap structure and functions
+  assert.match(app, /function renderMinimap/)
+  assert.match(app, /function getMinimapMetrics/)
+  assert.match(app, /function panCameraToMinimapPoint/)
+  assert.match(app, /function updateMinimapViewfinder/)
+  assert.match(app, /data-minimap-stage/)
+  assert.match(app, /class="minimap-viewfinder"/)
+
+  // Minimap styles
+  assert.match(styles, /\.synapse-minimap/)
+  assert.match(styles, /\.minimap-stage/)
+  assert.match(styles, /\.minimap-viewfinder/)
+  assert.match(styles, /\.minimap-node/)
+
+  // Minimap pointer and toggle interactions
+  assert.match(app, /data-minimap-stage/)
+  assert.match(app, /data-action="toggle-minimap"/)
+})

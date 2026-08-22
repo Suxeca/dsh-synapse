@@ -3,6 +3,10 @@ if ('scrollRestoration' in history) history.scrollRestoration = 'manual'
 const LEGACY_CARD_POSITIONS_KEY = 'dsh-synapse:card-positions'
 const CARD_POSITIONS_KEY = 'dsh-synapse:card-positions:v3'
 const CARD_NOTES_KEY = 'dsh-synapse:card-notes:v1'
+const MINIMAP_COLLAPSED_KEY = 'dsh-synapse:minimap-collapsed:v1'
+const minimapCollapsedFromStorage = (() => {
+  try { return localStorage.getItem(MINIMAP_COLLAPSED_KEY) === 'true' } catch { return false }
+})()
 const savedCardNotes = (() => {
   try {
     const value = JSON.parse(localStorage.getItem(CARD_NOTES_KEY) ?? '[]')
@@ -41,7 +45,7 @@ const state = {
   dshWorkspaces: [], selectedDshWorkspaceId: null,
   historyBySession: new Map(), historyRequests: new Map(), pendingReplies: new Map(), pendingRpc: new Map(), liveReplies: new Map(),
   draft: null, error: '', workspaceLoad: 0, branchAnchors: new Map(savedBranchAnchors), cardPositions: new Map(savedCardPositions), collapsedCardIds: new Set(savedCollapsedCards),
-  cardNotes: new Map(savedCardNotes), editingNoteCardId: null, contextMenu: null,
+  cardNotes: new Map(savedCardNotes), editingNoteCardId: null, contextMenu: null, minimapCollapsed: minimapCollapsedFromStorage,
   dragging: false, canvasGesture: false, canvasRefreshAfter: 0, canvasViewInitialized: false, canvasCamera: { x: 0, y: 0 },
   expandedMessageIds: new Set(),
 }
@@ -1108,6 +1112,109 @@ function draftCard(cards) {
   </article>`
 }
 
+const MINIMAP_WIDTH = 180
+const MINIMAP_HEIGHT = 115
+
+function getMinimapMetrics(cards) {
+  if (!Array.isArray(cards) || cards.length === 0) return null
+  const PADDING = 140
+  const minX = Math.min(...cards.map(c => c.position.x)) - PADDING
+  const maxX = Math.max(...cards.map(c => c.position.x + CARD_WIDTH)) + PADDING
+  const minY = Math.min(...cards.map(c => c.position.y)) - PADDING
+  const maxY = Math.max(...cards.map(c => c.position.y + CARD_HEIGHT)) + PADDING
+  const worldWidth = Math.max(800, maxX - minX)
+  const worldHeight = Math.max(600, maxY - minY)
+
+  const scale = Math.min(MINIMAP_WIDTH / worldWidth, MINIMAP_HEIGHT / worldHeight)
+  const offsetX = (MINIMAP_WIDTH - worldWidth * scale) / 2
+  const offsetY = (MINIMAP_HEIGHT - worldHeight * scale) / 2
+
+  const vp = document.querySelector('.canvas-viewport')
+  const vpWidth = vp instanceof HTMLElement ? vp.clientWidth : (window.innerWidth || 1000)
+  const vpHeight = vp instanceof HTMLElement ? vp.clientHeight : (window.innerHeight || 800)
+
+  const viewWorldX = (0 - state.canvasCamera.x) / state.zoom
+  const viewWorldY = (0 - state.canvasCamera.y) / state.zoom
+  const viewWorldWidth = vpWidth / state.zoom
+  const viewWorldHeight = vpHeight / state.zoom
+
+  const vx = Math.max(0, Math.min(MINIMAP_WIDTH - 8, (viewWorldX - minX) * scale + offsetX))
+  const vy = Math.max(0, Math.min(MINIMAP_HEIGHT - 8, (viewWorldY - minY) * scale + offsetY))
+  const vw = Math.max(10, Math.min(MINIMAP_WIDTH, viewWorldWidth * scale))
+  const vh = Math.max(8, Math.min(MINIMAP_HEIGHT, viewWorldHeight * scale))
+
+  return {
+    minX, maxX, minY, maxY, worldWidth, worldHeight,
+    scale, offsetX, offsetY,
+    viewfinder: { x: vx, y: vy, w: vw, h: vh },
+    vpWidth, vpHeight,
+  }
+}
+
+function renderMinimap(cards) {
+  if (!cards || cards.length === 0) return ''
+  if (state.minimapCollapsed) {
+    return `<div class="synapse-minimap collapsed"><button type="button" class="minimap-toggle" data-action="toggle-minimap" title="展开小地图导航" aria-label="展开小地图"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 1.5A1.5 1.5 0 0 0 0 3v10a1.5 1.5 0 0 0 1.5 1.5h13a1.5 1.5 0 0 0 1.5-1.5V3a1.5 1.5 0 0 0-1.5-1.5h-13zM1 3a.5.5 0 0 1 .5-.5h13a.5.5 0 0 1 .5.5v10a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5V3zm10 2a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1-.5-.5V5z"/></svg></button></div>`
+  }
+
+  const metrics = getMinimapMetrics(cards)
+  if (!metrics) return ''
+
+  const { minX, minY, scale, offsetX, offsetY, viewfinder } = metrics
+
+  const miniNodes = cards.map(card => {
+    const mx = (card.position.x - minX) * scale + offsetX
+    const my = (card.position.y - minY) * scale + offsetY
+    const mw = Math.max(4, CARD_WIDTH * scale)
+    const mh = Math.max(3, CARD_HEIGHT * scale)
+    const isActive = card.dshThreadId === state.activeId
+    const hasNote = state.cardNotes.has(card.id)
+    return `<div class="minimap-node${isActive ? ' active' : ''}${hasNote ? ' has-note' : ''}" style="left:${mx.toFixed(1)}px;top:${my.toFixed(1)}px;width:${mw.toFixed(1)}px;height:${mh.toFixed(1)}px;" title="${escapeHtml(card.question)}"></div>`
+  }).join('')
+
+  return `<div class="synapse-minimap" role="region" aria-label="画布缩略图导航">
+    <div class="minimap-header">
+      <span class="minimap-title">缩略图导航</span>
+      <button type="button" class="minimap-toggle-close" data-action="toggle-minimap" title="收起缩略图" aria-label="收起缩略图">×</button>
+    </div>
+    <div class="minimap-stage" data-minimap-stage>
+      ${miniNodes}
+      <div class="minimap-viewfinder" style="left:${viewfinder.x.toFixed(1)}px;top:${viewfinder.y.toFixed(1)}px;width:${viewfinder.w.toFixed(1)}px;height:${viewfinder.h.toFixed(1)}px;"></div>
+    </div>
+  </div>`
+}
+
+function updateMinimapViewfinder(cards) {
+  const vf = document.querySelector('.minimap-viewfinder')
+  if (!(vf instanceof HTMLElement)) return
+  const currentCards = cards ?? (state.workspace ? conversationCards(state.workspace.threads) : [])
+  const metrics = getMinimapMetrics(currentCards)
+  if (!metrics) return
+  vf.style.left = `${metrics.viewfinder.x.toFixed(1)}px`
+  vf.style.top = `${metrics.viewfinder.y.toFixed(1)}px`
+  vf.style.width = `${metrics.viewfinder.w.toFixed(1)}px`
+  vf.style.height = `${metrics.viewfinder.h.toFixed(1)}px`
+}
+
+function panCameraToMinimapPoint(clientX, clientY, stage) {
+  if (!state.workspace?.threads) return
+  const cards = conversationCards(state.workspace.threads)
+  const metrics = getMinimapMetrics(cards)
+  if (!metrics) return
+  const rect = stage.getBoundingClientRect()
+  const ex = clientX - rect.left
+  const ey = clientY - rect.top
+  const { minX, minY, scale, offsetX, offsetY, vpWidth, vpHeight } = metrics
+  const targetWorldX = minX + (ex - offsetX) / scale
+  const targetWorldY = minY + (ey - offsetY) / scale
+
+  state.canvasCamera = {
+    x: vpWidth / 2 - targetWorldX * state.zoom,
+    y: vpHeight / 2 - targetWorldY * state.zoom,
+  }
+  applyCanvasTransform()
+}
+
 function renderCanvas() {
   const threads = state.workspace?.threads ?? []
   if (threads.length === 0 && state.draft?.kind !== 'new') return `<section class="empty-canvas"><strong>当前工作目录还没有 DSH 对话。</strong><p>点击新会话，在画布中输入第一条消息。</p><div><button class="primary" type="button" data-action="create-session">新建会话</button></div></section>`
@@ -1118,7 +1225,7 @@ function renderCanvas() {
     state.canvasCamera = initialCanvasCamera(cards)
     state.canvasViewInitialized = true
   }
-  return `<section class="canvas-view"><div class="canvas-viewport"><div class="canvas-content" style="transform:translate(${state.canvasCamera.x}px, ${state.canvasCamera.y}px) scale(${state.zoom})"><svg class="connectors">${canvasConnectors(cards)}</svg><div class="cards-layer">${cards.map(card => conversationCard(card, graph)).join('')}${draftCard(cards)}</div></div></div></section>`
+  return `<section class="canvas-view"><div class="canvas-viewport"><div class="canvas-content" style="transform:translate(${state.canvasCamera.x}px, ${state.canvasCamera.y}px) scale(${state.zoom})"><svg class="connectors">${canvasConnectors(cards)}</svg><div class="cards-layer">${cards.map(card => conversationCard(card, graph)).join('')}${draftCard(cards)}</div></div>${renderMinimap(cards)}</div></section>`
 }
 
 function isProcessMessage(message) {
@@ -1217,6 +1324,7 @@ function renderPreservingDetailScroll() {
 function applyCanvasTransform() {
   const content = document.querySelector('.canvas-content')
   if (content instanceof HTMLElement) content.style.transform = `translate(${state.canvasCamera.x}px, ${state.canvasCamera.y}px) scale(${state.zoom})`
+  updateMinimapViewfinder()
 }
 
 function installDragging() {
@@ -1297,8 +1405,27 @@ function focusActiveCard() {
 }
 
 app.addEventListener('pointerdown', event => {
+  const minimapStage = event.target instanceof Element ? event.target.closest('[data-minimap-stage]') : null
+  if (minimapStage instanceof HTMLElement) {
+    event.preventDefault()
+    panCameraToMinimapPoint(event.clientX, event.clientY, minimapStage)
+    const move = moveEvent => {
+      panCameraToMinimapPoint(moveEvent.clientX, moveEvent.clientY, minimapStage)
+    }
+    const stop = () => {
+      document.removeEventListener('pointermove', move)
+      document.removeEventListener('pointerup', stop)
+      document.removeEventListener('pointercancel', stop)
+      deferCanvasRefresh(120)
+    }
+    document.addEventListener('pointermove', move)
+    document.addEventListener('pointerup', stop)
+    document.addEventListener('pointercancel', stop)
+    return
+  }
+
   const viewport = canvasViewport(event.target)
-  if (!(viewport instanceof HTMLElement) || event.target instanceof Element && event.target.closest('.thread-card, button, textarea, select')) return
+  if (!(viewport instanceof HTMLElement) || event.target instanceof Element && event.target.closest('.thread-card, button, textarea, select, .synapse-minimap')) return
   event.preventDefault()
   const origin = { x: event.clientX, y: event.clientY, camera: { ...state.canvasCamera } }
   state.canvasGesture = true
@@ -1440,6 +1567,11 @@ app.addEventListener('click', async event => {
     }
     if (button.dataset.action === 'close-note-modal') {
       state.editingNoteCardId = null
+      render()
+    }
+    if (button.dataset.action === 'toggle-minimap') {
+      state.minimapCollapsed = !state.minimapCollapsed
+      try { localStorage.setItem(MINIMAP_COLLAPSED_KEY, String(state.minimapCollapsed)) } catch { /* ignore */ }
       render()
     }
     if (button.dataset.action === 'show-thread' && thread !== undefined) { state.activeId = thread.id; state.mode = 'thread'; render(); void loadThreadHistory(thread) }
