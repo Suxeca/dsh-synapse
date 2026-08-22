@@ -304,3 +304,83 @@ test('renders and persists card notes and opens context menu on right click', as
   assert.match(app, /data-note-form/)
   assert.match(styles, /\.note-modal/)
 })
+
+test('builds maximum spanning tree for multi-level deep branches and sibling forks', async () => {
+  const app = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const vm = await import('node:vm')
+
+  const context = {
+    globalThis: {},
+    state: {
+      workspace: {
+        id: 'w1',
+        title: '工作区',
+        threads: [
+          {
+            id: 'trunk',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            parentId: null,
+            messages: Array.from({ length: 15 }, (_, i) => ({ kind: 'user', text: `Q${i + 1}`, sourceSeq: (i + 1) * 2 - 1 })),
+          },
+          {
+            id: 'branchA',
+            createdAt: '2026-01-01T00:10:00.000Z',
+            parentId: null,
+            messages: [
+              ...Array.from({ length: 10 }, (_, i) => ({ kind: 'user', text: `Q${i + 1}`, sourceSeq: (i + 1) * 2 - 1 })),
+              ...Array.from({ length: 8 }, (_, i) => ({ kind: 'user', text: `QA${i + 11}`, sourceSeq: 100 + (i + 11) * 2 - 1 })),
+            ],
+          },
+          {
+            id: 'deepBranchB',
+            createdAt: '2026-01-01T00:20:00.000Z',
+            parentId: null,
+            messages: [
+              ...Array.from({ length: 10 }, (_, i) => ({ kind: 'user', text: `Q${i + 1}`, sourceSeq: (i + 1) * 2 - 1 })),
+              ...Array.from({ length: 4 }, (_, i) => ({ kind: 'user', text: `QA${i + 11}`, sourceSeq: 100 + (i + 11) * 2 - 1 })),
+              ...Array.from({ length: 6 }, (_, i) => ({ kind: 'user', text: `QB${i + 15}`, sourceSeq: 200 + (i + 15) * 2 - 1 })),
+            ],
+          },
+          {
+            id: 'siblingBranchC',
+            createdAt: '2026-01-01T00:15:00.000Z',
+            parentId: null,
+            messages: [
+              ...Array.from({ length: 10 }, (_, i) => ({ kind: 'user', text: `Q${i + 1}`, sourceSeq: (i + 1) * 2 - 1 })),
+              ...Array.from({ length: 3 }, (_, i) => ({ kind: 'user', text: `QC${i + 11}`, sourceSeq: 300 + (i + 11) * 2 - 1 })),
+            ],
+          },
+        ],
+      },
+      cardPositions: new Map(),
+      branchAnchors: new Map(),
+    },
+  }
+  vm.createContext(context)
+
+  const fnStart = app.indexOf('function normalizeTurnText')
+  const fnEnd = app.indexOf('function persistCardPositions()')
+  const fnCode = app.slice(fnStart, fnEnd)
+
+  vm.runInContext(`${fnCode}; globalThis.repair = repairWorkspaceSessionConnections`, context)
+  await context.globalThis.repair()
+
+  const threads = context.state.workspace.threads
+  // trunk is root
+  assert.equal(threads.find(t => t.id === 'trunk').parentId, null)
+
+  // branchA forks from trunk at Turn 10 (sourceSeq: 19)
+  assert.equal(threads.find(t => t.id === 'branchA').parentId, 'trunk')
+  assert.equal(context.state.branchAnchors.get('branchA'), 'trunk:turn:19')
+  assert.equal(threads.find(t => t.id === 'branchA').sourceSeedLength, 121)
+
+  // deepBranchB forks from branchA at Turn 14 (QA14 -> sourceSeq: 127)
+  assert.equal(threads.find(t => t.id === 'deepBranchB').parentId, 'branchA')
+  assert.equal(context.state.branchAnchors.get('deepBranchB'), 'branchA:turn:127')
+  assert.equal(threads.find(t => t.id === 'deepBranchB').sourceSeedLength, 229)
+
+  // siblingBranchC forks from trunk at Turn 10 (sourceSeq: 19)
+  assert.equal(threads.find(t => t.id === 'siblingBranchC').parentId, 'trunk')
+  assert.equal(context.state.branchAnchors.get('siblingBranchC'), 'trunk:turn:19')
+  assert.equal(threads.find(t => t.id === 'siblingBranchC').sourceSeedLength, 321)
+})

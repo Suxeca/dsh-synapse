@@ -110,111 +110,126 @@ async function repairWorkspaceSessionConnections() {
   let changed = false
   const result = new Map()
 
+  // Maximum Spanning Tree Construction:
+  const sessionList = []
   for (const thread of threads) {
     const ownMsgs = thread.messages ?? []
     const ownTurns = sessionUserTurns(ownMsgs)
+    sessionList.push({
+      id: thread.id,
+      thread,
+      messages: ownMsgs,
+      turns: ownTurns,
+      turnCount: ownTurns.length,
+      firstTurn: ownTurns[0]?.text ? normalizeTurnText(ownTurns[0].text) : '',
+      createdAt: String(thread.createdAt ?? ''),
+      metaParentId: thread.parentId,
+      metaSeedLength: Number.isSafeInteger(thread.sourceSeedLength) ? thread.sourceSeedLength : null,
+    })
+  }
 
-    let resolvedParentId = null
-    let resolvedAnchorCardId = null
-    let resolvedSeedLength = Number.isSafeInteger(thread.sourceSeedLength) ? thread.sourceSeedLength : null
+  // 2. Group into topic clusters by initial question
+  const topicGroups = new Map()
+  for (const s of sessionList) {
+    if (s.turnCount === 0) continue
+    const group = topicGroups.get(s.firstTurn) ?? []
+    group.push(s)
+    topicGroups.set(s.firstTurn, group)
+  }
 
-    const ownUpdatedAt = String(thread.updatedAt ?? '')
-    const ownCreatedAt = String(thread.createdAt ?? '')
-
-    // Strategy 1 (Highest priority): Find best context match based on user dialogue turns
-    let bestContextParent = null
-    let bestScore = -Infinity
-    let bestMatchCount = 0
-    let bestForkParentTurn = null
-    let bestFirstOwnTurn = null
-
-    for (const other of threads) {
-      if (other.id === thread.id) continue
-      const otherTurns = sessionUserTurns(other.messages ?? [])
-      if (otherTurns.length === 0) continue
-      const otherUpdatedAt = String(other.updatedAt ?? '')
-      const otherCreatedAt = String(other.createdAt ?? '')
-
-      let matchCount = 0
-      while (matchCount < ownTurns.length && matchCount < otherTurns.length) {
-        if (normalizeTurnText(ownTurns[matchCount].text) === normalizeTurnText(otherTurns[matchCount].text)) {
-          matchCount++
-        } else {
-          break
-        }
-      }
-
-      if (matchCount > 0) {
-        const isOtherExactPrefix = otherTurns.length === matchCount && ownTurns.length > matchCount
-        const isDivergence = matchCount < ownTurns.length && matchCount < otherTurns.length
-        const isOtherEarlier = otherCreatedAt <= ownCreatedAt || thread.parentId === other.id
-
-        if (isOtherExactPrefix || (isDivergence && isOtherEarlier)) {
-          const score = matchCount * 10000 + (isOtherExactPrefix ? 2000 : 0) + (thread.parentId === other.id ? 500 : 0) - otherTurns.length
-
-          if (score > bestScore) {
-            bestScore = score
-            bestMatchCount = matchCount
-            bestContextParent = other
-            bestForkParentTurn = otherTurns[matchCount - 1]
-            bestFirstOwnTurn = ownTurns[matchCount]
-          }
-        }
-      }
-    }
-
-    if (bestContextParent !== null && bestMatchCount >= 1) {
-      resolvedParentId = bestContextParent.id
-      if (bestFirstOwnTurn && Number.isInteger(bestFirstOwnTurn.sourceSeq)) {
-        resolvedSeedLength = bestFirstOwnTurn.sourceSeq
-      }
-      if (bestForkParentTurn) {
-        resolvedAnchorCardId = cardIdForTurn(bestContextParent.id, bestForkParentTurn)
-      }
-    } else if (ownTurns.length === 0) {
-      if (thread.parentId && threadIds.has(thread.parentId) && thread.parentId !== thread.id) {
-        resolvedParentId = thread.parentId
-      }
-    } else {
-      resolvedParentId = null
-      resolvedSeedLength = null
-      resolvedAnchorCardId = null
-    }
-
-    // When parent session is determined, deduce the exact anchor card from the parent's turns
-    if (resolvedParentId && threadIds.has(resolvedParentId)) {
-      const parentThread = threads.find(t => t.id === resolvedParentId)
-      const parentTurns = sessionUserTurns(parentThread?.messages ?? [])
-
-      if (!resolvedAnchorCardId && parentTurns.length > 0) {
-        let matchK = 0
-        while (matchK < ownTurns.length && matchK < parentTurns.length) {
-          if (normalizeTurnText(ownTurns[matchK].text) === normalizeTurnText(parentTurns[matchK].text)) {
-            matchK++
-          } else {
-            break
-          }
-        }
-        if (matchK > 0) {
-          const forkTurn = parentTurns[matchK - 1]
-          resolvedAnchorCardId = cardIdForTurn(resolvedParentId, forkTurn)
-          const firstOwn = ownTurns[matchK]
-          if (firstOwn && Number.isInteger(firstOwn.sourceSeq)) {
-            resolvedSeedLength = firstOwn.sourceSeq
-          }
-        } else {
-          const lastParentTurn = parentTurns.at(-1)
-          resolvedAnchorCardId = cardIdForTurn(resolvedParentId, lastParentTurn)
-        }
-      }
-
-      result.set(thread.id, {
-        parentId: resolvedParentId,
-        sourceSeedLength: resolvedSeedLength,
-        anchorCardId: resolvedAnchorCardId,
+  for (const [firstTurn, group] of topicGroups.entries()) {
+    if (group.length === 1) {
+      result.set(group[0].id, {
+        parentId: null,
+        sourceSeedLength: null,
+        anchorCardId: null,
       })
-    } else {
-      result.set(thread.id, {
+      continue
+    }
+
+    // 3. Establish the primary trunk / root for this tree
+    group.sort((a, b) => {
+      const aIsMetaRoot = !a.metaParentId || !group.some(g => g.id === a.metaParentId)
+      const bIsMetaRoot = !b.metaParentId || !group.some(g => g.id === b.metaParentId)
+      if (aIsMetaRoot && !bIsMetaRoot) return -1
+      if (!aIsMetaRoot && bIsMetaRoot) return 1
+      if (a.createdAt !== b.createdAt) return a.createdAt.localeCompare(b.createdAt)
+      return a.turnCount - b.turnCount
+    })
+
+    const treeNodes = [group[0]]
+    result.set(group[0].id, {
+      parentId: null,
+      sourceSeedLength: null,
+      anchorCardId: null,
+    })
+
+    // 4. Greedily attach remaining branches to their deepest matching parent in the tree
+    const remaining = group.slice(1)
+
+    while (remaining.length > 0) {
+      let bestCandidateIdx = -1
+      let bestParentNode = null
+      let bestMatchK = 0
+      let bestFirstOwnTurn = null
+      let bestForkParentTurn = null
+
+      for (let i = 0; i < remaining.length; i++) {
+        const candidate = remaining[i]
+        for (const parentNode of treeNodes) {
+          let k = 0
+          while (k < candidate.turns.length && k < parentNode.turns.length) {
+            if (normalizeTurnText(candidate.turns[k].text) === normalizeTurnText(parentNode.turns[k].text)) {
+              k++
+            } else {
+              break
+            }
+          }
+
+          if (k > bestMatchK) {
+            bestMatchK = k
+            bestCandidateIdx = i
+            bestParentNode = parentNode
+            bestForkParentTurn = parentNode.turns[k - 1]
+            bestFirstOwnTurn = candidate.turns[k]
+          } else if (k === bestMatchK && k > 0 && bestCandidateIdx !== -1) {
+            if (candidate.metaParentId === parentNode.id) {
+              bestCandidateIdx = i
+              bestParentNode = parentNode
+              bestForkParentTurn = parentNode.turns[k - 1]
+              bestFirstOwnTurn = candidate.turns[k]
+            }
+          }
+        }
+      }
+
+      if (bestCandidateIdx >= 0 && bestMatchK > 0) {
+        const selected = remaining.splice(bestCandidateIdx, 1)[0]
+        treeNodes.push(selected)
+
+        result.set(selected.id, {
+          parentId: bestParentNode.id,
+          sourceSeedLength: (bestFirstOwnTurn && Number.isInteger(bestFirstOwnTurn.sourceSeq)) ? bestFirstOwnTurn.sourceSeq : selected.metaSeedLength,
+          anchorCardId: cardIdForTurn(bestParentNode.id, bestForkParentTurn),
+          matchCount: bestMatchK,
+        })
+      } else {
+        const isolated = remaining.shift()
+        treeNodes.push(isolated)
+        result.set(isolated.id, {
+          parentId: null,
+          sourceSeedLength: null,
+          anchorCardId: null,
+          matchCount: 0,
+        })
+      }
+    }
+  }
+
+  // Handle empty sessions
+  for (const s of sessionList) {
+    if (s.turnCount === 0) {
+      result.set(s.id, {
         parentId: null,
         sourceSeedLength: null,
         anchorCardId: null,
@@ -742,10 +757,11 @@ function refreshCardConnectors(cardId) {
   }
 }
 
-function initialCanvasCamera(cards) {
+function initialCanvasCamera(cards, preferRoot = false) {
   const draft = state.draft?.kind === 'new' ? { id: 'draft:new', position: { x: 86, y: 82 } } : draftPlacement(cards)
-  const active = state.activeId === null ? undefined : cards.find(card => card.dshThreadId === state.activeId)
-  const focus = draft ?? active ?? cards[0]
+  const rootCard = cards.find(card => card.parentId === null) ?? cards[0]
+  const active = (preferRoot || state.activeId === null) ? undefined : cards.find(card => card.dshThreadId === state.activeId)
+  const focus = draft ?? (preferRoot ? rootCard : (active ?? rootCard))
   const position = focus?.position
   if (position === undefined) return { x: 0, y: 0 }
   return { x: CAMERA_INSET_X - position.x * state.zoom, y: CAMERA_INSET_Y - position.y * state.zoom }
@@ -1464,6 +1480,9 @@ app.addEventListener('click', async event => {
       await repairWorkspaceSessionConnections()
       resetCardPositions()
       resetCanvasCamera()
+      const allCards = conversationCards(state.workspace.threads)
+      state.canvasCamera = initialCanvasCamera(allCards, true)
+      state.canvasViewInitialized = true
       render()
     }
   } catch (error) { setError(error) }
