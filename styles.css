@@ -28,9 +28,43 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .view-switch button:focus-visible { outline: 2px solid #111827; outline-offset: 2px; }
 .canvas-controls { position: relative; z-index: 2; display: flex; align-items: center; gap: 5px; flex: none; }
 .canvas-controls button { min-width: 32px; height: 32px; padding: 0 9px; font-size: 12px; border-radius: 8px; }
-.canvas-controls .canvas-new-session { display: inline-flex; align-items: center; gap: 6px; border-color: #2563eb; background: #2563eb; color: #fff; font-weight: 600; padding: 0 12px; }
-.canvas-controls .canvas-new-session:hover { border-color: #1d4ed8; background: #1d4ed8; color: #fff; }
-.canvas-controls .canvas-new-session svg { width: 14px; height: 14px; flex: none; }
+.canvas-controls .canvas-new-session {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  border: 1px solid #2563eb !important;
+  background: #2563eb !important;
+  color: #ffffff !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  line-height: 1 !important;
+  padding: 0 12px !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+.canvas-controls .canvas-new-session span {
+  display: inline-block !important;
+  color: #ffffff !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  min-width: 0 !important;
+  line-height: 1 !important;
+  text-align: left !important;
+}
+.canvas-controls .canvas-new-session svg {
+  display: inline-block !important;
+  width: 14px !important;
+  height: 14px !important;
+  flex: none !important;
+  stroke: #ffffff !important;
+}
+.canvas-controls .canvas-new-session:hover {
+  border-color: #1d4ed8 !important;
+  background: #1d4ed8 !important;
+  color: #ffffff !important;
+}
 .canvas-controls span { min-width: 38px; color: #64748b; font-size: 12px; text-align: center; }
 /* Named-map library in regular topbar flow */
 .map-picker { position: relative; z-index: 2; display: flex; height: 34px; align-items: stretch; overflow: hidden; border: 1px solid #dbe3ef; border-radius: 9px; background: rgba(255,255,255,.98); box-shadow: 0 2px 6px rgba(15,23,42,.04); flex: none; }
