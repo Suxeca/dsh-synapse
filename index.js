@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 import { MapDirectoryStore } from './map-store.js'
 
 export const name = 'synapse'
@@ -763,7 +763,12 @@ function page() {
 export function apply(ctx, config) {
   const autoProjection = config?.autoProjection !== false
   const store = new WorkspaceStore(config?.dataFile, autoProjection)
-  const mapStore = new MapDirectoryStore(config?.mapDirectory, store)
+  // Existing profiles predate mapDirectory; derive a sibling directory so a
+  // hot upgrade remains backward compatible until their patch is refreshed.
+  const mapDirectory = typeof config?.mapDirectory === 'string' && config.mapDirectory.trim() !== ''
+    ? config.mapDirectory
+    : join(dirname(store.dataFile), 'maps')
+  const mapStore = new MapDirectoryStore(mapDirectory, store)
   const projectionWorkspaceTitle = typeof config?.projectionWorkspaceTitle === 'string' && config.projectionWorkspaceTitle.trim() !== ''
     ? config.projectionWorkspaceTitle.trim().slice(0, MAX_TITLE_LENGTH)
     : 'DSH 任务'
