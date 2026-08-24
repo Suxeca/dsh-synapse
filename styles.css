@@ -38,9 +38,13 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .map-picker-field > span { overflow: hidden; color: #94a3b8; font-size: 9px; font-weight: 650; letter-spacing: .05em; line-height: 11px; text-transform: uppercase; white-space: nowrap; }
 .map-picker select { width: 100%; min-width: 0; appearance: none; border: 0; outline: 0; background: transparent; padding: 0; color: #1e293b; cursor: pointer; font-size: 12px; font-weight: 650; line-height: 15px; }
 .map-picker:focus-within { border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(59,130,246,.15), 0 5px 18px rgba(15,23,42,.08); }
-.map-create { display: grid; width: 34px; min-width: 34px; min-height: 0; place-items: center; border: 0; border-left: 1px solid #edf1f6; border-radius: 0; background: transparent; padding: 0; color: #2563eb; }
-.map-create:hover { border: 0; border-left: 1px solid #dbeafe; background: #eff6ff; color: #1d4ed8; }
-@media (max-width: 560px) { .map-picker { top: 48px; left: 10px; height: 32px; } .map-picker-mark { width: 30px; } .map-picker-field { min-width: 126px; } .map-create { width: 32px; min-width: 32px; } }
+.map-action-btn, .map-create { display: grid; width: 30px; min-width: 30px; min-height: 0; place-items: center; border: 0; border-left: 1px solid #edf1f6; border-radius: 0; background: transparent; padding: 0; color: #64748b; }
+.map-action-btn svg { width: 13px; height: 13px; }
+.map-action-btn:hover { background: #f1f5f9; color: #1e293b; }
+.map-action-btn.danger:hover { background: #fef2f2; color: #dc2626; }
+.map-create { width: 32px; min-width: 32px; color: #2563eb; }
+.map-create:hover { background: #eff6ff; color: #1d4ed8; }
+@media (max-width: 560px) { .map-picker { top: 48px; left: 10px; height: 32px; } .map-picker-mark { width: 30px; } .map-picker-field { min-width: 120px; } .map-action-btn { width: 26px; min-width: 26px; } .map-create { width: 28px; min-width: 28px; } }
 .load-session-button { display: none; }
 .sidebar { grid-row: 1 / -1; display: flex; flex-direction: column; gap: 0; min-height: 0; padding: 6px 12px; border-right: 1px solid #e5e7eb; background: #f8f9fa; }
 .new-workspace { display: flex; width: calc(100% - 4px); min-height: auto; height: 38px; align-items: center; justify-content: center; gap: 6px; margin: 0 2px 8px; border-color: rgba(0,0,0,.1); border-radius: 12px; background: #fff; padding: 8px 16px; color: #111827; font-size: 14px; font-weight: 500; }

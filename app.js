@@ -634,9 +634,41 @@ async function switchMap(id) {
 
 async function createMap() {
   const title = window.prompt('新地图名称')
-  if (title === null) return
-  const body = await api('/synapse/api/maps', { method: 'POST', body: JSON.stringify({ title }) })
+  if (title === null || title.trim() === '') return
+  const body = await api('/synapse/api/maps', { method: 'POST', body: JSON.stringify({ title: title.trim() }) })
   await switchMap(body.map.id)
+}
+
+async function renameCurrentMap() {
+  const currentMap = state.maps.find(m => m.id === state.activeMapId)
+  const currentTitle = currentMap?.title ?? ''
+  const newTitle = window.prompt('修改当前地图名称', currentTitle)
+  if (newTitle === null || newTitle.trim() === '' || newTitle.trim() === currentTitle) return
+  await api('/synapse/api/maps/' + encodeURIComponent(state.activeMapId), {
+    method: 'PATCH',
+    body: JSON.stringify({ title: newTitle.trim() })
+  })
+  await refreshMaps()
+  render()
+}
+
+async function deleteCurrentMap() {
+  if (state.maps.length <= 1) {
+    alert('当前只有一张地图，无法删除。')
+    return
+  }
+  const currentMap = state.maps.find(m => m.id === state.activeMapId)
+  const title = currentMap?.title ?? state.activeMapId
+  if (!window.confirm(`确认删除地图「${title}」？此操作将永久移除该地图及其节点与备注记录（DSH 原会话均保留）。`)) return
+  const result = await api('/synapse/api/maps/' + encodeURIComponent(state.activeMapId), {
+    method: 'DELETE'
+  })
+  if (result.activeMapId) {
+    await switchMap(result.activeMapId)
+  } else {
+    await refreshMaps()
+    render()
+  }
 }
 
 async function api(path, options = {}) {
@@ -1807,6 +1839,27 @@ function panCameraToMinimapPoint(clientX, clientY, stage) {
   applyCanvasTransform()
 }
 
+function getVisibleCards(cards) {
+  // If there are few cards, render all directly.
+  if (cards.length <= 25) return cards
+  const vp = typeof document !== 'undefined' ? document.querySelector('.canvas-viewport') : null
+  const vpWidth = (vp instanceof HTMLElement && vp.clientWidth > 0) ? vp.clientWidth : (globalThis.innerWidth || 1200)
+  const vpHeight = (vp instanceof HTMLElement && vp.clientHeight > 0) ? vp.clientHeight : (globalThis.innerHeight || 800)
+  const margin = 600 // generous bounding buffer in world pixels
+  const viewLeft = (0 - state.canvasCamera.x) / state.zoom - margin
+  const viewTop = (0 - state.canvasCamera.y) / state.zoom - margin
+  const viewRight = (vpWidth - state.canvasCamera.x) / state.zoom + margin
+  const viewBottom = (vpHeight - state.canvasCamera.y) / state.zoom + margin
+
+  return cards.filter(card => {
+    // Always render currently active or edited card
+    if (card.dshThreadId === state.activeId || card.id === state.editingNoteCardId) return true
+    const cx = card.position.x
+    const cy = card.position.y
+    return (cx + CARD_WIDTH >= viewLeft && cx <= viewRight && cy + CARD_HEIGHT >= viewTop && cy <= viewBottom)
+  })
+}
+
 function renderCanvas() {
   const threads = mapThreads()
   if (threads.length === 0 && state.draft?.kind !== 'new') return `<section class="empty-canvas"><strong>地图还没有会话。</strong><p>从左侧历史对话区把一个会话拖到地图上，即可展开它的完整路径节点。</p><div><button class="primary" type="button" data-action="create-session">新建会话</button></div></section>`
@@ -1815,7 +1868,8 @@ function renderCanvas() {
     state.canvasCamera = initialCanvasCamera(cards)
     state.canvasViewInitialized = true
   }
-  return `<section class="canvas-view"><div class="canvas-viewport"><div class="canvas-content" style="transform:translate(${state.canvasCamera.x}px, ${state.canvasCamera.y}px) scale(${state.zoom})"><svg class="connectors">${canvasConnectors(cards)}</svg><div class="cards-layer">${cards.map(conversationCard).join('')}${draftCard(cards)}</div></div>${renderMinimap(cards)}</div></section>`
+  const visibleCards = getVisibleCards(cards)
+  return `<section class="canvas-view"><div class="canvas-viewport"><div class="canvas-content" style="transform:translate(${state.canvasCamera.x}px, ${state.canvasCamera.y}px) scale(${state.zoom})"><svg class="connectors">${canvasConnectors(cards)}</svg><div class="cards-layer">${visibleCards.map(conversationCard).join('')}${draftCard(cards)}</div></div>${renderMinimap(cards)}</div></section>`
 }
 
 function isProcessMessage(message) {
@@ -1942,7 +1996,8 @@ function render() {
   const canvasControls = state.mode === 'canvas' ? `<div class="canvas-controls"><button class="load-session-button" data-action="open-session-picker">加载对话</button>${canvasTools}</div>` : ''
   const detailAvailable = currentThread() !== null
   const canvasTabs = `<nav class="canvas-tabs" aria-label="会话地图视图"><button class="${state.mode === 'canvas' ? 'active' : ''}" data-action="show-canvas">地图</button><button class="${state.mode === 'thread' ? 'active' : ''}" data-action="show-thread" data-thread="${state.activeId ?? ''}" ${detailAvailable ? '' : 'disabled'}>详情</button></nav>`
-  const mapPicker = `<div class="map-picker" role="group" aria-label="地图书架"><span class="map-picker-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4.75A2.75 2.75 0 0 1 7.75 2H19v17.5H7.75A2.75 2.75 0 0 0 5 22V4.75Z"/><path d="M5 18.5A2.75 2.75 0 0 1 7.75 15.75H19"/></svg></span><label class="map-picker-field"><span>地图书架</span><select data-action="select-map" aria-label="选择地图">${state.maps.map(map => `<option value="${escapeHtml(map.id)}" ${map.id === state.activeMapId ? 'selected' : ''}>${escapeHtml(map.title)}</option>`).join('')}</select></label><button class="map-create" data-action="create-map" title="新建地图" aria-label="新建地图"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>`
+  const canDeleteMap = state.maps.length > 1
+  const mapPicker = `<div class="map-picker" role="group" aria-label="地图书架"><span class="map-picker-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4.75A2.75 2.75 0 0 1 7.75 2H19v17.5H7.75A2.75 2.75 0 0 0 5 22V4.75Z"/><path d="M5 18.5A2.75 2.75 0 0 1 7.75 15.75H19"/></svg></span><label class="map-picker-field"><span>地图书架</span><select data-action="select-map" aria-label="选择地图">${state.maps.map(map => `<option value="${escapeHtml(map.id)}" ${map.id === state.activeMapId ? 'selected' : ''}>${escapeHtml(map.title)}</option>`).join('')}</select></label><button class="map-action-btn" data-action="rename-map" title="重命名当前地图" aria-label="重命名当前地图"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M12.854.146a.5.5 0 0 0-.707 0L10.5 1.793 14.207 5.5l1.647-1.646a.5.5 0 0 0 0-.708l-3-3zm.646 6.061L9.793 2.5 3.293 9H3.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.207l6.5-6.5zm-7.468 7.468A.5.5 0 0 1 6 13.5V13h-.5a.5.5 0 0 1-.5-.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.5-.5V10h-.5a.499.499 0 0 1-.175-.032l-.179.178a.5.5 0 0 0-.11.168l-2 5a.5.5 0 0 0 .65.65l5-2a.5.5 0 0 0 .168-.11l.178-.178z"/></svg></button>${canDeleteMap ? `<button class="map-action-btn danger" data-action="delete-map" title="删除当前地图" aria-label="删除当前地图"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/><path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/></svg></button>` : ''}<button class="map-create" data-action="create-map" title="新建地图" aria-label="新建地图"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>`
   app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><div class="sidebar-heading"><span>历史对话</span><span class="sidebar-hint">拖到右侧地图加载</span></div>${renderSessionLibrary()}</aside><header class="topbar"><div class="view-switch" role="group" aria-label="视图切换"><button data-action="close" type="button" aria-pressed="false">对话</button><button class="active" type="button" aria-pressed="true">会话地图</button></div>${mapPicker}${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message" role="alert"><span>${escapeHtml(state.error)}</span><button data-action="dismiss-error" aria-label="关闭" title="关闭">×</button></div>` : ''}${canvasTabs}${view}</section>${state.sessionPickerOpen ? renderSessionPicker() : ''}${renderNoteModal()}${renderContextMenu()}${renderExportModal()}<input type="file" class="synapse-file-input" accept=".synapse,.json" data-action="import-file-selected" style="display:none"></main>`
   installDragging()
   for (const [threadId, scrollTop] of cardScrollTops) {
@@ -2184,6 +2239,8 @@ app.addEventListener('click', async event => {
   try {
     if (button.dataset.action === 'close') post('synapse:close')
     if (button.dataset.action === 'create-map') await createMap()
+    if (button.dataset.action === 'rename-map') await renameCurrentMap()
+    if (button.dataset.action === 'delete-map') await deleteCurrentMap()
     if (button.dataset.action === 'toggle-sidebar') { state.sidebarCollapsed = !state.sidebarCollapsed; render() }
     if (button.dataset.action === 'toggle-session-library') { state.sidebarExpanded = !state.sidebarExpanded; render() }
     if (button.dataset.action === 'toggle-workspace-sessions' && button.dataset.workspaceId !== undefined) {

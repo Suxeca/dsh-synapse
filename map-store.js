@@ -1,20 +1,23 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 
 const MAP_ID = /^[a-z0-9][a-z0-9-]{0,63}$/
 const MAX_TITLE_LENGTH = 120
+const LOCK_STALE_MS = 60_000
 
-/** Directory-backed, profile-shared named map persistence. */
+/** Directory-backed, profile-shared named map persistence with cross-process locking. */
 export class MapDirectoryStore {
   constructor(mapDirectory, legacyStore) {
     if (typeof mapDirectory !== 'string' || mapDirectory.trim() === '') throw new Error('synapse: config.mapDirectory must be a non-empty path')
     this.mapDirectory = mapDirectory
     this.mapsDirectory = join(mapDirectory, 'maps')
     this.indexFile = join(mapDirectory, 'index.json')
+    this.lockFile = join(mapDirectory, 'synapse-maps.lock')
     this.legacyStore = legacyStore
     this.serial = Promise.resolve()
     this.index = undefined
+    this.lockWarned = false
     this.ready = this.load()
   }
 
@@ -36,6 +39,36 @@ export class MapDirectoryStore {
       await this.writeMap({ version: 1, ...map, mapState: {}, cardNotes: {} })
       await this.writeIndex()
       return { ...map, active: false }
+    })
+  }
+
+  async rename(id, newTitle) {
+    return this.mutate(async () => {
+      const map = this.find(id)
+      const title = requiredTitle(newTitle)
+      map.title = title
+      map.updatedAt = new Date().toISOString()
+      const doc = await this.readMap(id)
+      doc.title = title
+      doc.updatedAt = map.updatedAt
+      await this.writeMap(doc)
+      await this.writeIndex()
+      return { ...map, active: map.id === this.index.activeMapId }
+    })
+  }
+
+  async delete(id) {
+    return this.mutate(async () => {
+      if (this.index.maps.length <= 1) throw new Error('不能删除唯一的地图')
+      const map = this.find(id)
+      const remainingMaps = this.index.maps.filter(item => item.id !== id)
+      this.index.maps = remainingMaps
+      if (this.index.activeMapId === id) {
+        this.index.activeMapId = remainingMaps[0].id
+      }
+      await this.writeIndex()
+      await unlink(this.mapFile(id)).catch(() => {})
+      return { deleted: true, activeMapId: this.index.activeMapId }
     })
   }
 
@@ -87,9 +120,59 @@ export class MapDirectoryStore {
 
   async mutate(action) {
     await this.ready
-    const task = this.serial.then(action)
+    const task = this.serial.then(async () => {
+      await this.acquireLock()
+      try {
+        return await action()
+      } finally {
+        await this.releaseLock()
+      }
+    })
     this.serial = task.catch(() => undefined)
     return task
+  }
+
+  async acquireLock() {
+    if (await this.tryAcquireLock()) return
+    if (await this.lockIsStale()) {
+      await unlink(this.lockFile).catch(() => {})
+      if (await this.tryAcquireLock()) return
+    }
+    if (!this.lockWarned) {
+      this.lockWarned = true
+      process.stderr.write('synapse: 另一个 dsh web 实例正在写入地图目录——请只运行一个实例\n')
+    }
+  }
+
+  async tryAcquireLock() {
+    try {
+      await writeFile(this.lockFile, String(process.pid) + '\n', { flag: 'wx' })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  async lockIsStale() {
+    try {
+      const [content, stats] = await Promise.all([readFile(this.lockFile, 'utf8'), stat(this.lockFile)])
+      const tooOld = Date.now() - stats.mtimeMs > LOCK_STALE_MS
+      const pid = Number.parseInt(content, 10)
+      if (!Number.isInteger(pid)) return tooOld
+      if (pid === process.pid) return false
+      try {
+        process.kill(pid, 0)
+        return tooOld
+      } catch {
+        return true
+      }
+    } catch {
+      return false
+    }
+  }
+
+  async releaseLock() {
+    await unlink(this.lockFile).catch(() => {})
   }
 
   find(id) {

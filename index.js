@@ -876,6 +876,20 @@ export function apply(ctx, config) {
         broadcastMapChanged()
         return sendJson(res, 200, { map })
       }
+      const mapItem = /^\/synapse\/api\/maps\/([a-z0-9-]+)$/i.exec(path)
+      if (mapItem !== null) {
+        if (req.method === 'PATCH') {
+          const body = await readJson(req)
+          const map = await mapStore.rename(mapItem[1], body.title)
+          broadcastMapChanged()
+          return sendJson(res, 200, { map })
+        }
+        if (req.method === 'DELETE') {
+          const result = await mapStore.delete(mapItem[1])
+          broadcastMapChanged()
+          return sendJson(res, 200, result)
+        }
+      }
       if (path === '/synapse/api/map') {
         if (req.method === 'GET') return sendJson(res, 200, await mapStore.getState())
         if (req.method === 'PUT') {

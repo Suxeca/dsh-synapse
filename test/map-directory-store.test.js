@@ -31,6 +31,25 @@ test('creates, selects, and persists isolated named maps across store instances'
   assert.deepEqual((await reloaded.getState()).map, { legacy: {} })
 })
 
+test('renames and deletes named maps while updating active selection', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-synapse-maps-'))
+  const store = new MapDirectoryStore(directory, legacy())
+  await store.ready
+  const created = await store.create('待重命名地图')
+  const renamed = await store.rename(created.id, '新名称地图')
+  assert.equal(renamed.title, '新名称地图')
+  assert.equal((await store.list()).find(m => m.id === created.id).title, '新名称地图')
+
+  await store.select(created.id)
+  const delResult = await store.delete(created.id)
+  assert.equal(delResult.deleted, true)
+  assert.equal(delResult.activeMapId, 'default')
+  assert.equal((await store.list()).length, 1)
+
+  // Cannot delete the only remaining map
+  await assert.rejects(store.delete('default'), /不能删除唯一的地图/)
+})
+
 test('rejects unsafe ids and titles and leaves its index readable', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-synapse-maps-'))
   const store = new MapDirectoryStore(directory, legacy())
