@@ -23,6 +23,16 @@
 
 复杂任务往往不是一条直线：你需要保留某个方案、回到第二轮问题尝试另一条路径，或在多个会话之间快速定位上下文。Synapse 让这些关系留在同一张画布上，同时继续使用 DSH 原有的会话能力。
 
+### 面向学习与研究的定位
+
+- **非线性学习**：把追问、回溯和替代解法保留为可浏览的分支，而不是埋在连续消息流里。
+- **研究过程梳理**：用同一张画布定位关键上下文、记录卡片笔记，并在不同会话之间恢复推理线索。
+- **优化的会话地图工作流**：围绕 DSH 原生会话与 fork 构建；Synapse 不另起对话系统，只改善复杂会话关系的浏览与组织。
+
+### 来源与维护范围
+
+本仓库基于上游项目 [liangmianya/dsh-synapse](https://github.com/liangmianya/dsh-synapse) 的 MIT 许可代码持续维护，并保留上游署名。`Suxeca/dsh-synapse` 的发布、Issue 与安装来源均以**本仓库**为准；当前维护重点包括会话地图的跨设备状态同步、移动端画布体验、分支关系恢复及 `/synapse` 路由的 Host 信任边界。
+
 ### 功能特性
 
 | | 功能 | 说明 |
@@ -41,7 +51,7 @@
 ### 快速开始
 
 ```powershell
-corepack pnpm dsh plugin --profile web add github:liangmianya/dsh-synapse
+corepack pnpm dsh plugin --profile web add github:Suxeca/dsh-synapse
 corepack pnpm dsh web
 ```
 
@@ -57,7 +67,7 @@ corepack pnpm dsh web
 #### 从 GitHub 安装
 
 ```powershell
-corepack pnpm dsh plugin --profile web add github:liangmianya/dsh-synapse
+corepack pnpm dsh plugin --profile web add github:Suxeca/dsh-synapse
 ```
 
 GitHub 安装会执行本项目的 `prepare` 脚本（`node --check` 语法校验）。
@@ -67,7 +77,7 @@ GitHub 安装会执行本项目的 `prepare` 脚本（`node --check` 语法校�
 
 ```yaml
 allowBuilds:
-  "dsh-synapse@https://codeload.github.com/liangmianya/dsh-synapse/tar.gz/<commit>": true
+  "dsh-synapse@https://codeload.github.com/Suxeca/dsh-synapse/tar.gz/<commit>": true
 ```
 
 然后重新执行安装命令。在 pnpm 10.x 上裸包名匹配不到 git 依赖；上游推送新 commit 后该键会变化，届时复制 pnpm 新打印的键即可。
@@ -125,10 +135,12 @@ corepack pnpm dsh plugin --profile web remove dsh-synapse
 3. 浏览画布卡片：点击卡片或侧边栏会话即可切换当前会话（原生页同步跟随）；"分支"操作保留一条替代路径。
 4. 点击卡片底部"详情"查看完整对话记录；点击顶部"对话"切换或卡片"在 DSH 中打开"，回到原生对话。
 
-### 数据与边界
+### 数据、隐私与边界
 
-- 画布元数据保存在 DSH Home 的 `synapse/workspaces.json`（当前 schema v4，自动迁移旧版数据）。
-- 会话内容仍由 DSH session log 保存和管理。
+- **持久化内容**：画布工作区、卡片位置、笔记、已加载会话及分支锚点保存在 DSH Home 的 `synapse/workspaces.json`（当前 schema v4，自动迁移旧版数据）。
+- **会话内容归属**：对话正文仍由 DSH session log 保存和管理；Synapse 仅从已提交的会话事件读取信息以渲染地图。
+- **保留与删除**：卸载插件不删除画布元数据；删除 `workspaces.json` 会删除地图布局和笔记，但不会删除 DSH 对话日志。
+- **访问边界**：默认仅信任 `localhost` 与 `127.0.0.1`。局域网访问必须显式将主机加入 `trustedHosts`；请只填写你实际控制的主机。
 - 本插件不启动第二个 Web 服务、不创建第二套 Agent，也不改变 DSH 的模型或工具执行行为。
 
 ### 模型影响
@@ -150,6 +162,16 @@ corepack pnpm dsh plugin --profile web remove dsh-synapse
 
 Complex work is rarely linear. You may need to preserve one approach, return to an earlier turn, and explore another path without losing context. Synapse keeps those relationships on one canvas while leaving DSH's native session behavior intact.
 
+### Learning and research focus
+
+- **Non-linear learning:** keep follow-up questions, revisits, and alternative approaches as browsable branches rather than burying them in one message stream.
+- **Research-process navigation:** locate decisive context, keep card notes, and recover lines of inquiry across related sessions on one canvas.
+- **An optimized conversation-map workflow:** build on DSH-native sessions and forks; Synapse does not create a second conversation system, but improves how complex session relationships are explored and organized.
+
+### Upstream and maintenance scope
+
+This repository continues the MIT-licensed work of [liangmianya/dsh-synapse](https://github.com/liangmianya/dsh-synapse) with upstream attribution preserved. Releases, issues, and installation for the maintained variant are provided by **this repository**; its current focus includes cross-device map-state synchronization, responsive mobile canvas behavior, branch-relationship recovery, and a Host trust boundary for `/synapse` routes.
+
 ### Features
 
 | | Feature | Description |
@@ -166,7 +188,7 @@ Complex work is rarely linear. You may need to preserve one approach, return to 
 ### Quick start
 
 ```powershell
-corepack pnpm dsh plugin --profile web add github:liangmianya/dsh-synapse
+corepack pnpm dsh plugin --profile web add github:Suxeca/dsh-synapse
 corepack pnpm dsh web
 ```
 
@@ -182,7 +204,7 @@ Prerequisites: a DeepSeek Harness with the `dsh plugin` profile plugin mechanism
 #### Install from GitHub
 
 ```powershell
-corepack pnpm dsh plugin --profile web add github:liangmianya/dsh-synapse
+corepack pnpm dsh plugin --profile web add github:Suxeca/dsh-synapse
 ```
 
 GitHub installs run this package's `prepare` script (`node --check` syntax validation).
@@ -192,7 +214,7 @@ GitHub installs run this package's `prepare` script (`node --check` syntax valid
 
 ```yaml
 allowBuilds:
-  "dsh-synapse@https://codeload.github.com/liangmianya/dsh-synapse/tar.gz/<commit>": true
+  "dsh-synapse@https://codeload.github.com/Suxeca/dsh-synapse/tar.gz/<commit>": true
 ```
 
 Then rerun the install command. On pnpm 10.x a bare package name does not match a git-hosted dependency; the key changes when the upstream repository pushes a new commit, so copy the newly printed key then.
@@ -250,10 +272,12 @@ The plugin is injected through the profile's `cordis.patch.yml`. Override any ke
 3. Browse the canvas: clicking a card or a sidebar session switches the current session (the native page follows); the "branch" action keeps an alternative path.
 4. Open "Details" at the bottom of a card for the full conversation; return to the native chat with the top "Dialogue" switch or a card's "Open in DSH" button.
 
-### Data and scope
+### Data, privacy, and scope
 
-- Canvas metadata is stored in `synapse/workspaces.json` under DSH Home (schema v4, old data migrates automatically).
-- DSH remains the owner of session-log content.
+- **Persisted data:** canvas workspaces, card positions, notes, loaded sessions, and branch anchors are stored in `synapse/workspaces.json` under DSH Home (schema v4; old data migrates automatically).
+- **Session-content ownership:** DSH remains the owner of session-log content. Synapse reads committed session events only to render the map.
+- **Retention and deletion:** uninstalling does not remove canvas metadata. Deleting `workspaces.json` removes map layout and notes, never DSH conversation logs.
+- **Access boundary:** only `localhost` and `127.0.0.1` are trusted by default. LAN access requires explicitly adding a host to `trustedHosts`; add only hosts you control.
 - This plugin starts no second web server, creates no second agent, and does not modify model or tool execution.
 
 ---
