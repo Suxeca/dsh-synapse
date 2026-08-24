@@ -9,7 +9,7 @@ button.primary { border-color: #111827; background: #111827; color: #fff; }
 button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .synapse-shell { --sidebar-width: 280px; --sidebar-half: 140px; height: 100vh; display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); grid-template-rows: 42px minmax(0, 1fr); overflow: hidden; }
 .synapse-shell.sidebar-collapsed { --sidebar-width: 56px; --sidebar-half: 28px; }
-.topbar { position: relative; grid-column: 2; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 16px; border: 0; background: #fff; }
+.topbar { position: relative; grid-column: 2; height: 48px; min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 16px; border-bottom: 1px solid #e5e7eb; background: #fff; z-index: 90; }
 .brand, .top-actions, .view-switch, .thread-card-head, .thread-meta, .detail-actions, .compare-title { display: flex; align-items: center; }
 .sidebar-brand-row { box-sizing: border-box; display: flex; align-items: center; gap: 8px; height: 60px; flex: none; margin-bottom: 8px; padding: 8px 0 8px 4px; overflow: hidden; }
 .brand { gap: 8px; min-width: 0; flex: 1; }
@@ -21,19 +21,19 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .sidebar-toggle:hover { border: 0; background: #eef0f2; color: #374151; }
 .sidebar-toggle svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.4; }
 .top-actions { gap: 10px; }
-.view-switch { position: fixed; z-index: 95; top: max(12px, env(safe-area-inset-top)); left: 50%; gap: 2px; padding: 3px; transform: translateX(-50%); border: 1px solid #d1d5db; border-radius: 999px; background: rgba(255,255,255,.96); backdrop-filter: blur(12px); box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+.view-switch { position: relative; z-index: 2; gap: 2px; padding: 3px; border: 1px solid #d1d5db; border-radius: 999px; background: rgba(255,255,255,.96); backdrop-filter: blur(12px); box-shadow: 0 2px 8px rgba(0,0,0,.06); flex: none; }
 .view-switch button { min-height: 28px; border: 0; border-radius: 999px; background: transparent; padding: 0 11px; color: #64748b; font-size: 12px; font-weight: 650; }
 .view-switch button:hover { background: #e5e7eb; color: #111827; }
 .view-switch button.active { background: #111827; color: #fff; }
 .view-switch button:focus-visible { outline: 2px solid #111827; outline-offset: 2px; }
-.canvas-controls { position: fixed; z-index: 80; top: 14px; right: 16px; display: flex; align-items: center; gap: 5px; }
+.canvas-controls { position: relative; z-index: 2; display: flex; align-items: center; gap: 5px; flex: none; }
 .canvas-controls button { min-width: 32px; height: 32px; padding: 0 9px; font-size: 12px; border-radius: 8px; }
 .canvas-controls .canvas-new-session { display: inline-flex; align-items: center; gap: 6px; border-color: #2563eb; background: #2563eb; color: #fff; font-weight: 600; padding: 0 12px; }
 .canvas-controls .canvas-new-session:hover { border-color: #1d4ed8; background: #1d4ed8; color: #fff; }
 .canvas-controls .canvas-new-session svg { width: 14px; height: 14px; flex: none; }
-.canvas-controls span { min-width: 42px; color: #64748b; font-size: 12px; text-align: center; }
-/* Named-map library: an intentionally quiet book-like control, separate from canvas tools. */
-.map-picker { position: fixed; z-index: 90; top: 10px; left: calc(var(--sidebar-width) + 16px); display: flex; height: 34px; align-items: stretch; overflow: hidden; border: 1px solid #dbe3ef; border-radius: 11px; background: rgba(255,255,255,.94); box-shadow: 0 5px 18px rgba(15,23,42,.08); backdrop-filter: blur(12px); }
+.canvas-controls span { min-width: 38px; color: #64748b; font-size: 12px; text-align: center; }
+/* Named-map library in regular topbar flow */
+.map-picker { position: relative; z-index: 2; display: flex; height: 34px; align-items: stretch; overflow: hidden; border: 1px solid #dbe3ef; border-radius: 9px; background: rgba(255,255,255,.98); box-shadow: 0 2px 6px rgba(15,23,42,.04); flex: none; }
 .map-picker-mark { display: grid; width: 33px; place-items: center; border-right: 1px solid #edf1f6; background: linear-gradient(145deg,#f8fbff,#eef4ff); color: #2563eb; }
 .map-picker-mark svg, .map-create svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
 .map-picker-field { display: grid; min-width: 142px; padding: 3px 28px 3px 9px; position: relative; cursor: pointer; }
@@ -48,25 +48,13 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .map-create { width: 32px; min-width: 32px; color: #2563eb; }
 .map-create:hover { background: #eff6ff; color: #1d4ed8; }
 @media (max-width: 760px) {
-  .map-picker {
-    position: static;
-    top: auto;
-    left: auto;
-    height: 32px;
-    margin-left: 8px;
-    z-index: 10;
-  }
+  .map-picker { height: 32px; }
 }
 @media (max-width: 560px) {
-  .map-picker {
-    position: static;
-    top: auto;
-    left: auto;
-    height: 30px;
-    margin: 0;
-  }
+  .topbar { padding: 0 8px; height: 44px; min-height: 44px; }
+  .map-picker { height: 30px; }
   .map-picker-mark { width: 26px; }
-  .map-picker-field { min-width: 90px; padding: 2px 20px 2px 6px; }
+  .map-picker-field { min-width: 80px; padding: 2px 18px 2px 6px; }
   .map-picker-field > span { display: none; }
   .map-action-btn { width: 24px; min-width: 24px; }
   .map-create { width: 26px; min-width: 26px; }
