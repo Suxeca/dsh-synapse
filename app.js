@@ -1873,8 +1873,7 @@ function renderCanvas() {
     state.canvasCamera = initialCanvasCamera(cards)
     state.canvasViewInitialized = true
   }
-  const visibleCards = getVisibleCards(cards)
-  return `<section class="canvas-view"><div class="canvas-viewport"><div class="canvas-content" style="transform:translate(${state.canvasCamera.x}px, ${state.canvasCamera.y}px) scale(${state.zoom})"><svg class="connectors">${canvasConnectors(cards)}</svg><div class="cards-layer">${visibleCards.map(conversationCard).join('')}${draftCard(cards)}</div></div>${renderMinimap(cards)}</div></section>`
+  return `<section class="canvas-view"><div class="canvas-viewport"><div class="canvas-content" style="transform:translate(${state.canvasCamera.x}px, ${state.canvasCamera.y}px) scale(${state.zoom})"><svg class="connectors">${canvasConnectors(cards)}</svg><div class="cards-layer">${cards.map(conversationCard).join('')}${draftCard(cards)}</div></div>${renderMinimap(cards)}</div></section>`
 }
 
 function isProcessMessage(message) {
