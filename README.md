@@ -38,6 +38,7 @@
 | | 功能 | 说明 |
 |---|---|---|
 | 🗺️ | 会话地图 | 在 DSH 原生对话与可视化画布之间切换 |
+| ✨ | 地图内发起会话 | 在地图顶栏一键“新建对话”，直接在画布上输入首条消息开启新主题，即时上图 |
 | 📚 | 地图书架 | 支持多命名地图管理，顶栏无缝翻页切换、新建、重命名与安全删除，多设备同步当前地图 |
 | 🚀 | 视口虚拟化 | 针对超大型会话网络自动启用视口裁剪渲染，保障上百节点丝滑交互与极低内存占用 |
 | 🌿 | 分支可见 | 通过 DSH 原生 session fork 创建分支，并按真实分叉点连接节点 |
@@ -182,6 +183,7 @@ This repository continues the MIT-licensed work of [liangmianya/dsh-synapse](htt
 | | Feature | Description |
 |---|---|---|
 | 🗺️ | Session map | Switch between the native DSH chat and a visual canvas |
+| ✨ | Start session on map | One-click "New Conversation" directly on the canvas with an interactive draft card |
 | 📚 | Map Library | Manage named maps with instant switching, creation, renaming, and deletion; synced across devices |
 | 🚀 | Viewport Virtualization | Windowed rendering for large canvas graphs, ensuring smooth 60fps pan/zoom across hundreds of cards |
 | 🌿 | Visible branches | Create forks through DSH native session forks and connect them at their actual branching turn |

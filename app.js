@@ -873,7 +873,9 @@ function openNewSession() {
   if (state.draft !== null) return
   state.mode = 'canvas'
   state.activeId = null
-  state.draft = { kind: 'new', text: '', sending: false }
+  const cards = conversationCards(mapThreads())
+  const position = firstAvailableCardPosition({ x: 86, y: 82 }, cards.map(c => c.position))
+  state.draft = { kind: 'new', text: '', sending: false, position }
   state.error = ''
   resetCanvasCamera()
   render()
@@ -1714,10 +1716,13 @@ function draftPlacement(cards) {
 
 function draftCard(cards) {
   const draft = state.draft
-  if (draft?.kind === 'new') return `<article class="thread-card draft-card first-session-card" data-card-id="draft" style="left:86px;top:82px;--thread-color:#3478f6">
-    <div class="thread-card-head"><span class="topic-dot"></span><strong>新会话</strong></div>
-    <form class="draft-branch-form" data-draft><textarea maxlength="4000" placeholder="输入第一条消息" ${draft.sending ? 'disabled' : ''}>${escapeHtml(draft.text)}</textarea>${draftActions(draft)}</form>
-  </article>`
+  if (draft?.kind === 'new') {
+    const pos = draft.position ?? firstAvailableCardPosition({ x: 86, y: 82 }, cards.map(c => c.position))
+    return `<article class="thread-card draft-card first-session-card" data-card-id="draft" style="left:${pos.x}px;top:${pos.y}px;--thread-color:#3478f6">
+      <div class="thread-card-head"><span class="topic-dot"></span><strong>新会话</strong></div>
+      <form class="draft-branch-form" data-draft><textarea maxlength="4000" placeholder="在地图中输入第一条消息开启新对话…" ${draft.sending ? 'disabled' : ''}>${escapeHtml(draft.text)}</textarea>${draftActions(draft)}</form>
+    </article>`
+  }
   const placement = draftPlacement(cards)
   if (draft === null || placement === null) return ''
   const continuing = draft.kind === 'continue'
@@ -1992,7 +1997,8 @@ function render() {
   const threads = mapThreads()
   const view = state.mode === 'thread' ? renderThread() : renderCanvas()
   const hasCanvasContent = threads.length > 0 || state.draft?.kind === 'new'
-  const canvasTools = hasCanvasContent ? `<button data-action="layout" title="整理节点：自动修复分支连接并重排卡片">整理节点</button><button data-action="focus-active" title="定位到当前会话">定位</button><button data-action="zoom-out" aria-label="缩小">-</button><span>${Math.round(state.zoom * 100)}%</span><button data-action="zoom-in" aria-label="放大">+</button><button data-action="sync-forks" title="同步：拉取服务端地图并自动加入新分支">同步</button><button data-action="open-export-modal" title="导出地图资产包或高清图片">导出</button><button data-action="trigger-import" title="导入 .synapse 地图资产包">导入</button><button data-action="clear-map" title="卸载所有已载入会话">清空地图</button>` : `<button data-action="trigger-import" title="导入 .synapse 地图资产包">导入地图</button>`
+  const newSessionBtn = `<button class="canvas-new-session" data-action="create-session" ${state.draft !== null ? 'disabled' : ''} title="在当前地图中开启新会话"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新建对话</span></button>`
+  const canvasTools = hasCanvasContent ? `${newSessionBtn}<button data-action="layout" title="整理节点：自动修复分支连接并重排卡片">整理节点</button><button data-action="focus-active" title="定位到当前会话">定位</button><button data-action="zoom-out" aria-label="缩小">-</button><span>${Math.round(state.zoom * 100)}%</span><button data-action="zoom-in" aria-label="放大">+</button><button data-action="sync-forks" title="同步：拉取服务端地图并自动加入新分支">同步</button><button data-action="open-export-modal" title="导出地图资产包或高清图片">导出</button><button data-action="trigger-import" title="导入 .synapse 地图资产包">导入</button><button data-action="clear-map" title="卸载所有已载入会话">清空地图</button>` : `${newSessionBtn}<button data-action="trigger-import" title="导入 .synapse 地图资产包">导入地图</button>`
   const canvasControls = state.mode === 'canvas' ? `<div class="canvas-controls"><button class="load-session-button" data-action="open-session-picker">加载对话</button>${canvasTools}</div>` : ''
   const detailAvailable = currentThread() !== null
   const canvasTabs = `<nav class="canvas-tabs" aria-label="会话地图视图"><button class="${state.mode === 'canvas' ? 'active' : ''}" data-action="show-canvas">地图</button><button class="${state.mode === 'thread' ? 'active' : ''}" data-action="show-thread" data-thread="${state.activeId ?? ''}" ${detailAvailable ? '' : 'disabled'}>详情</button></nav>`

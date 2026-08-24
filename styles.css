@@ -28,6 +28,9 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .view-switch button:focus-visible { outline: 2px solid #111827; outline-offset: 2px; }
 .canvas-controls { position: fixed; z-index: 80; top: 14px; right: 16px; display: flex; align-items: center; gap: 5px; }
 .canvas-controls button { min-width: 32px; padding: 0 8px; font-size: 12px; }
+.canvas-controls .canvas-new-session { display: inline-flex; align-items: center; gap: 5px; border-color: #2563eb; background: #2563eb; color: #fff; font-weight: 600; padding: 0 10px; }
+.canvas-controls .canvas-new-session:hover { border-color: #1d4ed8; background: #1d4ed8; color: #fff; }
+.canvas-controls .canvas-new-session svg { width: 13px; height: 13px; }
 .canvas-controls span { min-width: 42px; color: #64748b; font-size: 12px; text-align: center; }
 /* Named-map library: an intentionally quiet book-like control, separate from canvas tools. */
 .map-picker { position: fixed; z-index: 90; top: 10px; left: calc(var(--sidebar-width) + 16px); display: flex; height: 34px; align-items: stretch; overflow: hidden; border: 1px solid #dbe3ef; border-radius: 11px; background: rgba(255,255,255,.94); box-shadow: 0 5px 18px rgba(15,23,42,.08); backdrop-filter: blur(12px); }
