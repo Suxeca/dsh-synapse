@@ -114,7 +114,8 @@ corepack pnpm dsh plugin --profile web remove dsh-synapse
 
 | 键 | 默认值 | 说明 |
 |---|---|---|
-| `dataFile` | `$DSH_HOME/synapse/workspaces.json` | 画布元数据持久化路径 |
+| `dataFile` | `$DSH_HOME/synapse/workspaces.json` | 旧版工作区数据路径；首次启用地图书架时只读复制为“默认地图”，原文件不被删除或覆盖 |
+| `mapDirectory` | `$DSH_HOME/synapse/maps` | 地图书架目录：保存共享的活动地图索引和每张命名地图；可覆盖为你的研究项目目录 |
 | `autoProjection` | `true` | 是否自动把已提交的 DSH 会话事件投影为画布卡片 |
 | `projectionWorkspaceTitle` | `DSH 任务` | 投影工作区的标题 |
 | `trustedHosts` | `[]` | 额外放行的 Host（主机名或 主机:端口）；`localhost` 与 `127.0.0.1` 始终放行。局域网访问需在此加入你的主机 |
@@ -124,6 +125,7 @@ corepack pnpm dsh plugin --profile web remove dsh-synapse
 - id: synapse
   config:
     dataFile: !!js dshHomePath('synapse/my-workspaces.json')
+    mapDirectory: 'E:\Research\SynapseMaps' # choose a writable map-library directory
     autoProjection: true
     projectionWorkspaceTitle: 我的任务
 ```
@@ -131,8 +133,9 @@ corepack pnpm dsh plugin --profile web remove dsh-synapse
 ### 使用方式
 
 1. 在 DSH 中选择工作目录，或打开一个已有会话。
-2. 点击顶部"会话地图"进入画布。
-3. 浏览画布卡片：点击卡片或侧边栏会话即可切换当前会话（原生页同步跟随）；"分支"操作保留一条替代路径。
+2. 点击顶部"会话地图"进入画布；顶部的地图选择器可像翻书一样切换命名地图，`+` 可新建空白地图。
+3. 导入 `.synapse` 文件时会写入当前地图；切换地图不会清空其他地图。使用同一 DSH profile 的设备共享当前选择和地图内容。
+4. 浏览画布卡片：点击卡片或侧边栏会话即可切换当前会话（原生页同步跟随）；"分支"操作保留一条替代路径。
 4. 点击卡片底部"详情"查看完整对话记录；点击顶部"对话"切换或卡片"在 DSH 中打开"，回到原生对话。
 
 ### 数据、隐私与边界
@@ -261,6 +264,7 @@ The plugin is injected through the profile's `cordis.patch.yml`. Override any ke
 - id: synapse
   config:
     dataFile: !!js dshHomePath('synapse/my-workspaces.json')
+    mapDirectory: 'E:\Research\SynapseMaps' # choose a writable map-library directory
     autoProjection: true
     projectionWorkspaceTitle: My tasks
 ```
@@ -268,8 +272,9 @@ The plugin is injected through the profile's `cordis.patch.yml`. Override any ke
 ### Usage
 
 1. Select a working directory or open an existing DSH session.
-2. Open "Session Map" from the top switch.
-3. Browse the canvas: clicking a card or a sidebar session switches the current session (the native page follows); the "branch" action keeps an alternative path.
+2. Open "Session Map" from the top switch. Use the map selector like turning a page; `+` creates an empty named map.
+3. Importing a `.synapse` file writes it to the selected map, and switching maps never clears another map. Clients using the same DSH profile share the active map and its contents.
+4. Browse the canvas: clicking a card or a sidebar session switches the current session (the native page follows); the "branch" action keeps an alternative path.
 4. Open "Details" at the bottom of a card for the full conversation; return to the native chat with the top "Dialogue" switch or a card's "Open in DSH" button.
 
 ### Data, privacy, and scope

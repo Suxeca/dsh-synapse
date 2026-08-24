@@ -60,6 +60,7 @@ const loadedSessionsFromStorage = (() => {
 })()
 const state = {
   summaries: [], workspace: null, activeId: null, mode: 'canvas', zoom: 1, currentDsh: null, sidebarCollapsed: false, sessionPickerOpen: false, sessionPickerLoadingId: null,
+  maps: [], activeMapId: 'default',
   dshWorkspaces: [], selectedDshWorkspaceId: null, archivedSessionIds: [], sidebarSessionLimit: 3, sidebarExpanded: false, expandedWorkspaces: new Set(),
   historyBySession: new Map(), historyRequests: new Map(), pendingReplies: new Map(), pendingRpc: new Map(), liveReplies: new Map(),
   // Loaded-on-demand sessions: sessionId -> { messages, cachedAt, title }.
@@ -104,7 +105,7 @@ function triggerServerMapSync() {
 }
 
 function persistLoadedSessions() {
-  try { localStorage.setItem(LOADED_SESSIONS_KEY, JSON.stringify(Object.fromEntries(state.loadedSessions))) } catch { /* Private browsing may disable local storage. */ }
+  try { localStorage.setItem(mapStorageKey(LOADED_SESSIONS_KEY), JSON.stringify(Object.fromEntries(state.loadedSessions))) } catch { /* Private browsing may disable local storage. */ }
   triggerServerMapSync()
 }
 
@@ -120,6 +121,19 @@ async function loadServerMap() {
   const body = await res.json().catch(() => ({}))
   const map = body?.map
   const notes = body?.notes
+  const serverMapId = typeof body?.activeMap?.id === 'string' ? body.activeMap.id : null
+  if (serverMapId !== null && serverMapId !== state.activeMapId) {
+    // An SSE notification may have been caused by another device turning the
+    // shared map-library page. Swap every local-only cache before hydrating.
+    state.activeMapId = serverMapId
+    state.loadedSessions = new Map(Object.entries(readMapCache(LOADED_SESSIONS_KEY, {})))
+    state.cardPositions = new Map(readMapCache(CARD_POSITIONS_KEY, []))
+    state.cardNotes = new Map(readMapCache(CARD_NOTES_KEY, []))
+    state.branchAnchors = new Map(readMapCache('dsh-synapse:branch-anchors', []))
+    state.activeId = null
+    resetCanvasCamera()
+    void refreshMaps().catch(() => {})
+  }
   if (map === null || typeof map !== 'object' || Array.isArray(map)) return false
 
   const beforeMap = JSON.stringify(Object.fromEntries(state.loadedSessions))
@@ -568,7 +582,7 @@ async function repairLoadedSessionConnections() {
 }
 
 function persistCardPositions() {
-  try { localStorage.setItem(CARD_POSITIONS_KEY, JSON.stringify([...state.cardPositions])) } catch { /* Private browsing may disable local storage. */ }
+  try { localStorage.setItem(mapStorageKey(CARD_POSITIONS_KEY), JSON.stringify([...state.cardPositions])) } catch { /* Private browsing may disable local storage. */ }
 }
 
 function rememberCardPosition(cardId, position, aliases = []) {
@@ -589,6 +603,40 @@ function resetCardPositions() {
 function resetCanvasCamera() {
   state.canvasViewInitialized = false
   state.canvasCamera = { x: 0, y: 0 }
+}
+
+function mapStorageKey(name) { return name + ':map:' + state.activeMapId }
+function readMapCache(name, fallback) {
+  try { return JSON.parse(localStorage.getItem(mapStorageKey(name)) ?? JSON.stringify(fallback)) } catch { return fallback }
+}
+
+async function refreshMaps() {
+  const body = await api('/synapse/api/maps')
+  state.maps = Array.isArray(body.maps) ? body.maps : []
+  const active = state.maps.find(map => map.active)
+  if (active) state.activeMapId = active.id
+}
+
+async function switchMap(id) {
+  await api('/synapse/api/maps/' + encodeURIComponent(id) + '/activate', { method: 'POST' })
+  state.activeMapId = id
+  // Every local-only cache is map-scoped; clear runtime objects before pulling.
+  state.loadedSessions = new Map(Object.entries(readMapCache(LOADED_SESSIONS_KEY, {})))
+  state.cardPositions = new Map(readMapCache(CARD_POSITIONS_KEY, []))
+  state.cardNotes = new Map(readMapCache(CARD_NOTES_KEY, []))
+  state.branchAnchors = new Map(readMapCache('dsh-synapse:branch-anchors', []))
+  state.activeId = null
+  resetCanvasCamera()
+  await refreshMaps()
+  await loadServerMap()
+  render()
+}
+
+async function createMap() {
+  const title = window.prompt('新地图名称')
+  if (title === null) return
+  const body = await api('/synapse/api/maps', { method: 'POST', body: JSON.stringify({ title }) })
+  await switchMap(body.map.id)
 }
 
 async function api(path, options = {}) {
@@ -1894,7 +1942,8 @@ function render() {
   const canvasControls = state.mode === 'canvas' ? `<div class="canvas-controls"><button class="load-session-button" data-action="open-session-picker">加载对话</button>${canvasTools}</div>` : ''
   const detailAvailable = currentThread() !== null
   const canvasTabs = `<nav class="canvas-tabs" aria-label="会话地图视图"><button class="${state.mode === 'canvas' ? 'active' : ''}" data-action="show-canvas">地图</button><button class="${state.mode === 'thread' ? 'active' : ''}" data-action="show-thread" data-thread="${state.activeId ?? ''}" ${detailAvailable ? '' : 'disabled'}>详情</button></nav>`
-  app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><div class="sidebar-heading"><span>历史对话</span><span class="sidebar-hint">拖到右侧地图加载</span></div>${renderSessionLibrary()}</aside><header class="topbar"><div class="view-switch" role="group" aria-label="视图切换"><button data-action="close" type="button" aria-pressed="false">对话</button><button class="active" type="button" aria-pressed="true">会话地图</button></div>${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message" role="alert"><span>${escapeHtml(state.error)}</span><button data-action="dismiss-error" aria-label="关闭" title="关闭">×</button></div>` : ''}${canvasTabs}${view}</section>${state.sessionPickerOpen ? renderSessionPicker() : ''}${renderNoteModal()}${renderContextMenu()}${renderExportModal()}<input type="file" class="synapse-file-input" accept=".synapse,.json" data-action="import-file-selected" style="display:none"></main>`
+  const mapPicker = `<div class="map-picker"><select data-action="select-map" aria-label="选择地图">${state.maps.map(map => `<option value="${escapeHtml(map.id)}" ${map.id === state.activeMapId ? 'selected' : ''}>${escapeHtml(map.title)}</option>`).join('')}</select><button data-action="create-map" title="新建地图" aria-label="新建地图">+</button></div>`
+  app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><div class="sidebar-heading"><span>历史对话</span><span class="sidebar-hint">拖到右侧地图加载</span></div>${renderSessionLibrary()}</aside><header class="topbar"><div class="view-switch" role="group" aria-label="视图切换"><button data-action="close" type="button" aria-pressed="false">对话</button><button class="active" type="button" aria-pressed="true">会话地图</button></div>${mapPicker}${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message" role="alert"><span>${escapeHtml(state.error)}</span><button data-action="dismiss-error" aria-label="关闭" title="关闭">×</button></div>` : ''}${canvasTabs}${view}</section>${state.sessionPickerOpen ? renderSessionPicker() : ''}${renderNoteModal()}${renderContextMenu()}${renderExportModal()}<input type="file" class="synapse-file-input" accept=".synapse,.json" data-action="import-file-selected" style="display:none"></main>`
   installDragging()
   for (const [threadId, scrollTop] of cardScrollTops) {
     const answer = app.querySelector(`.thread-card[data-thread="${CSS.escape(threadId)}"] .thread-answer`)
@@ -2134,6 +2183,7 @@ app.addEventListener('click', async event => {
   const thread = mapThreads().find(item => item.id === button.dataset.thread)
   try {
     if (button.dataset.action === 'close') post('synapse:close')
+    if (button.dataset.action === 'create-map') await createMap()
     if (button.dataset.action === 'toggle-sidebar') { state.sidebarCollapsed = !state.sidebarCollapsed; render() }
     if (button.dataset.action === 'toggle-session-library') { state.sidebarExpanded = !state.sidebarExpanded; render() }
     if (button.dataset.action === 'toggle-workspace-sessions' && button.dataset.workspaceId !== undefined) {
@@ -2299,6 +2349,10 @@ app.addEventListener('dragleave', event => {
 
 app.addEventListener('change', async event => {
   const input = event.target
+  if (input instanceof HTMLSelectElement && input.dataset.action === 'select-map') {
+    try { await switchMap(input.value) } catch (error) { setError(error) }
+    return
+  }
   if (input instanceof HTMLInputElement && input.dataset.action === 'import-file-selected') {
     const file = input.files?.[0]
     if (!file) return
@@ -2383,8 +2437,8 @@ window.addEventListener('message', event => {
     if (!initialRefreshStarted) {
       initialRefreshStarted = true
       void refreshSummaries().catch(setError)
-      // Server-authoritative map: any device sees the same loaded sessions.
-      void loadServerMap().then(() => {
+      // The profile-shared map library selects the active page for every device.
+      void refreshMaps().then(() => loadServerMap()).then(() => {
         if (canReplaceView()) render()
       }).catch(() => {})
       // Push-based sync: subscribe once, no polling.

@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
+import { MapDirectoryStore } from './map-store.js'
 
 export const name = 'synapse'
 export const inject = ['webServer', 'sessions']
@@ -762,6 +763,7 @@ function page() {
 export function apply(ctx, config) {
   const autoProjection = config?.autoProjection !== false
   const store = new WorkspaceStore(config?.dataFile, autoProjection)
+  const mapStore = new MapDirectoryStore(config?.mapDirectory, store)
   const projectionWorkspaceTitle = typeof config?.projectionWorkspaceTitle === 'string' && config.projectionWorkspaceTitle.trim() !== ''
     ? config.projectionWorkspaceTitle.trim().slice(0, MAX_TITLE_LENGTH)
     : 'DSH 任务'
@@ -855,14 +857,27 @@ export function apply(ctx, config) {
           }))
         return sendJson(res, 200, { sessions })
       }
+      if (path === '/synapse/api/maps') {
+        if (req.method === 'GET') return sendJson(res, 200, { maps: await mapStore.list() })
+        if (req.method === 'POST') {
+          const map = await mapStore.create((await readJson(req)).title)
+          broadcastMapChanged()
+          return sendJson(res, 201, { map })
+        }
+      }
+      const mapActivation = /^\/synapse\/api\/maps\/([a-z0-9-]+)\/activate$/i.exec(path)
+      if (mapActivation !== null && req.method === 'POST') {
+        const map = await mapStore.select(mapActivation[1])
+        broadcastMapChanged()
+        return sendJson(res, 200, { map })
+      }
       if (path === '/synapse/api/map') {
-        if (req.method === 'GET') return sendJson(res, 200, { map: await store.getMap(), notes: await store.getNotes() })
+        if (req.method === 'GET') return sendJson(res, 200, await mapStore.getState())
         if (req.method === 'PUT') {
           const body = await readJson(req)
-          const map = body?.map !== undefined ? await store.setMap(body.map) : await store.getMap()
-          const notes = body?.notes !== undefined ? await store.setNotes(body.notes) : await store.getNotes()
+          const result = await mapStore.setState(body?.map, body?.notes)
           broadcastMapChanged()
-          return sendJson(res, 200, { map, notes })
+          return sendJson(res, 200, result)
         }
       }
       if (path === '/synapse/api/map/events') {

@@ -12,6 +12,7 @@
   },
   "files": [
     "index.js",
+    "map-store.js",
     "client.js",
     "app.js",
     "deepseek-mark.svg",

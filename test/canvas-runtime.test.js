@@ -100,7 +100,7 @@ test('detail view renders an inline branch/follow-up draft', async () => {
 test('persists dragged card positions and can focus the current session', async () => {
   const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
 
-  assert.match(source, /localStorage\.setItem\(CARD_POSITIONS_KEY/)
+  assert.match(source, /localStorage\.setItem\(mapStorageKey\(CARD_POSITIONS_KEY\)/)
   assert.match(source, /function focusActiveCard\(\)/)
   assert.match(source, /data-action="focus-active"/)
 })
