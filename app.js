@@ -2364,7 +2364,7 @@ app.addEventListener('click', async event => {
       resetCardPositions()
       resetCanvasCamera()
       const allCards = conversationCards(mapThreads())
-      state.canvasCamera = initialCanvasCamera(allCards, true)
+      state.canvasCamera = initialCanvasCamera(allCards, false)
       state.canvasViewInitialized = true
       render()
     }
