@@ -2,7 +2,9 @@
 
 ![version](https://img.shields.io/badge/version-0.3.0-3478f6?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-10b981?style=flat-square)
-![platform](https://img.shields.io/badge/platform-web-7c3aed?style=flat-square)
+![platform](https://img.shields.io/badge/platform-web%20%7C%20tui%20ready-7c3aed?style=flat-square)
+![dsh-std](https://img.shields.io/badge/dsh--std-v0.15-blue?style=flat-square)
+![dsh-ecosystem-spec](https://img.shields.io/badge/dsh--ecosystem--spec-compliant-brightgreen?style=flat-square)
 ![node](https://img.shields.io/badge/node-%3E%3D22.19-334155?style=flat-square)
 
 **A visual, non-linear conversation workspace plugin for DeepSeek Harness.**
@@ -48,6 +50,8 @@
 | ⚡ | 会话同步 | 原生对话与会话地图双向同步当前会话——任一侧切换，另一侧跟随高亮 |
 | 🎨 | 画布交互 | 拖动画布、缩放视图（最高 4×）、移动卡片（位置自动保存）、一键定位当前会话，卡片内平滑滚动 |
 | 🔒 | 原生会话不变 | 打开、追问、创建和归档仍由 DSH 会话系统完成；Synapse 只提供另一种查看与组织方式 |
+| 🛡️ | 生态规范兼容 | 符合 `dsh-std v0.15` 与 `dsh-ecosystem-spec` 准入标准，内置 `dsh-plugin.json` 与软探测降级 |
+| 🖥️ | 双端伴随协同 | 支持 Web GUI 沉浸式全屏画布，同时支持在 `dsh-tui` 终端环境下实时状态感知与副屏推流 |
 
 ![Native dialogue and Synapse toggle](docs/images/native-webui.png)
 

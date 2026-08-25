@@ -19,9 +19,16 @@
     "styles.css",
     "docs/images",
     "cordis.patch.yml",
+    "dsh-plugin.json",
     "README.md",
     "LICENSE"
   ],
+  "dependencies": {
+    "schemastery": "^3.18.0"
+  },
+  "peerDependencies": {
+    "cordis": ">=4.0.0-rc <5"
+  },
   "scripts": {
     "build": "node --check index.js && node --check client.js && node --check app.js",
     "prepare": "pnpm run build",
