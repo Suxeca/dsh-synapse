@@ -1371,10 +1371,6 @@ function renderContextMenu() {
       <svg class="context-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M13.0762 1.37207C14.0846 1.37228 14.9021 2.19077 14.9023 3.19922C14.9022 4.20772 14.0847 5.02518 13.0762 5.02539C12.2967 5.02539 11.6325 4.53691 11.3701 3.84961H4.35547C4.79397 4.26458 5.15861 4.7644 5.41699 5.33496L7.10645 9.06738C7.88526 10.7875 9.55104 11.9228 11.4189 12.0371C11.7085 11.4109 12.3411 10.9756 13.0762 10.9756C14.0843 10.9759 14.9023 11.7936 14.9023 12.8018C14.9023 13.81 14.0843 14.6277 13.0762 14.6279C12.2534 14.6279 11.5574 14.0832 11.3291 13.335C8.9868 13.1879 6.89981 11.7612 5.92285 9.60352L4.23242 5.87109C3.67503 4.64033 2.44878 3.84961 1.09766 3.84961V2.54883C1.10665 2.54883 1.11601 2.54975 1.125 2.5498L11.3701 2.54883C11.6326 1.86151 12.2969 1.37207 13.0762 1.37207ZM13.0762 12.2764C12.7858 12.2764 12.5508 12.5114 12.5508 12.8018C12.5508 13.0921 12.7858 13.3281 13.0762 13.3281C13.3664 13.3279 13.6025 13.092 13.6025 12.8018C13.6025 12.5115 13.3664 12.2766 13.0762 12.2764ZM13.0762 2.67285C12.7855 2.67285 12.55 2.90861 12.5498 3.19922C12.5499 3.48987 12.7855 3.72559 13.0762 3.72559C13.3667 3.72538 13.6024 3.48975 13.6025 3.19922C13.6023 2.90874 13.3666 2.67306 13.0762 2.67285Z"/></svg>
       <span>在此创建分支</span>
     </button>
-    <button type="button" class="context-item" data-action="show-thread" data-thread="${escapeHtml(threadId)}" role="menuitem">
-      <svg class="context-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2zm10-1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1z"/></svg>
-      <span>查看完整对话</span>
-    </button>
     <button type="button" class="context-item" data-action="open-dsh" data-thread="${escapeHtml(threadId)}" role="menuitem">
       <svg class="context-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8.636 3.5a.5.5 0 0 0-.5-.5H1.5A1.5 1.5 0 0 0 0 4.5v10A1.5 1.5 0 0 0 1.5 16h10a1.5 1.5 0 0 0 1.5-1.5V7.864a.5.5 0 0 0-1 0V14.5a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-10a.5.5 0 0 1 .5-.5h6.636a.5.5 0 0 0 .5-.5z"/><path d="M16 .5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0 0 1h3.793L6.146 9.146a.5.5 0 1 0 .708.708L15 1.707V5.5a.5.5 0 0 0 1 0v-5z"/></svg>
       <span>在 DSH 中打开</span>
@@ -1691,11 +1687,11 @@ function conversationCard(card) {
   const noteHtml = note ? `<div class="thread-card-note" data-action="edit-note" data-card="${escapeHtml(card.id)}" title="${escapeHtml(note)} (点击修改)"><svg class="note-pin-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M9.828.722a.5.5 0 0 1 .354.146l4.95 4.95a.5.5 0 0 1 0 .707c-.48.48-1.072.588-1.503.588-.177 0-.335-.018-.46-.039l-3.134 3.134a5.927 5.927 0 0 1 .16 1.013c.046.702-.032 1.487-.445 2.184a.5.5 0 0 1-.722.146L5.536 10.96 1.854 14.646a.5.5 0 0 1-.708-.708L4.828 10.25 1.42 6.84a.5.5 0 0 1 .146-.722c.697-.413 1.482-.491 2.184-.445.31.02.665.074 1.013.16L7.9 2.7c-.021-.125-.039-.283-.039-.46 0-.43.107-1.023.588-1.503a.5.5 0 0 1 .354-.146z"/></svg><span class="note-text">${escapeHtml(note)}</span><button class="note-delete-btn" type="button" data-action="delete-note" data-card="${escapeHtml(card.id)}" title="删除备注" aria-label="删除备注">×</button></div>` : ''
   return `<article class="thread-card ${active}" data-card-id="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px;--thread-color:#3478f6">
     <button class="node-handle" data-drag-card="${card.id}" aria-label="拖动 ${escapeHtml(card.question)}" title="拖动卡片"></button>
-    <div class="thread-card-head"><span class="topic-dot"></span><button class="thread-title" data-action="show-thread" data-thread="${card.dshThreadId}" title="查看完整会话：${escapeHtml(card.question)}">${escapeHtml(card.question)}</button>${continueButton}</div>
+    <div class="thread-card-head"><span class="topic-dot"></span><button class="thread-title" data-action="select-thread" data-thread="${card.dshThreadId}" title="${escapeHtml(card.question)}">${escapeHtml(card.question)}</button>${continueButton}</div>
     ${noteHtml}
     <div class="thread-meta"><span>${source}</span><span>第 ${card.turnIndex + 1} 轮</span></div>
     <div class="thread-answer">${card.answer === null ? '<p class="thread-answer-empty">等待助手回复</p>' : card.answer.pending && card.answer.text === '' ? '<p class="thread-answer-pending">正在回复</p>' : `${renderMarkdown(card.answer.text)}${card.answer.pending ? '<p class="thread-answer-pending">正在回复</p>' : ''}`}</div>
-    <footer><button data-action="show-thread" data-thread="${card.dshThreadId}">详情</button><button data-action="open-branch" data-thread="${card.dshThreadId}" data-card="${card.id}"${branchSequence}>分支</button><button data-action="open-dsh" data-thread="${card.dshThreadId}">打开 DSH</button><button data-action="archive-thread" data-thread="${card.dshThreadId}">卸载</button></footer>
+    <footer><button data-action="open-branch" data-thread="${card.dshThreadId}" data-card="${card.id}"${branchSequence}>创建分支</button><button data-action="open-dsh" data-thread="${card.dshThreadId}">在 DSH 中打开</button><button data-action="archive-thread" data-thread="${card.dshThreadId}">卸载</button></footer>
   </article>`
 }
 
@@ -1967,50 +1963,27 @@ function renderSessionLibrary() {
   return `<nav class="session-library">${sections}</nav>`
 }
 
-function renderThread() {
-  const thread = currentThread()
-  if (thread === null) return renderCanvas()
-  const messages = messagesFor(thread)
-  const waiting = state.pendingReplies.has(thread.dshSessionId)
-  const draft = state.draft
-  const draftForThis = draft !== null && draft.parentId === thread.id
-  const detailDraft = draftForThis
-    ? `<div class="detail-draft"><div class="detail-draft-label">${draft.kind === 'continue' ? '新的追问' : '新的分支'}</div><form class="draft-branch-form" data-draft><textarea maxlength="4000" placeholder="${draft.kind === 'continue' ? '输入追问' : '输入这个分支的新问题'}" ${draft.sending ? 'disabled' : ''}>${escapeHtml(draft.text)}</textarea>${draftActions(draft)}</form></div>`
-    : ''
-  return `<section class="detail-view"><header class="detail-head"><div class="detail-head-title"><div class="detail-head-meta"><span class="detail-badge">${thread.parentId === null ? '会话' : '分支'}</span>${thread.dshSessionTitle ?? thread.title ? `<span class="detail-subtitle">${escapeHtml(thread.dshSessionTitle ?? thread.title)}</span>` : ''}</div><h1>${escapeHtml(questionFor(thread))}</h1></div><div class="detail-head-actions"><button data-action="open-dsh" data-thread="${thread.id}" title="在原生对话中打开此会话">在 DSH 中打开</button><button data-action="open-branch" data-thread="${thread.id}" title="基于最新回答创建分支">创建分支</button><button class="primary" data-action="show-canvas">返回画布</button></div></header><div class="detail-scroll">${messages.map(message => threadMessage(thread, message)).join('') || '<div class="note-empty">等待这条会话的第一条消息。</div>'}${detailDraft}</div><form class="message-composer" data-compose="${thread.id}"><textarea maxlength="4000" placeholder="继续当前会话…" ${waiting ? 'disabled' : ''}></textarea><button class="primary" type="submit" ${waiting ? 'disabled' : ''}>${waiting ? '等待回复' : '发送'}</button></form></section>`
-}
-
 function render() {
-  const detail = state.mode === 'thread' ? document.querySelector('.detail-scroll') : null
-  const detailScrollTop = detail instanceof HTMLElement ? detail.scrollTop : null
   const cardScrollTops = new Map()
-  if (state.mode === 'canvas') {
-    for (const answer of document.querySelectorAll('.thread-card[data-thread] .thread-answer')) {
-      const card = answer.closest('.thread-card')
-      if (card instanceof HTMLElement && typeof card.dataset.thread === 'string') cardScrollTops.set(card.dataset.thread, answer.scrollTop)
-    }
+  for (const answer of document.querySelectorAll('.thread-card[data-thread] .thread-answer')) {
+    const card = answer.closest('.thread-card')
+    if (card instanceof HTMLElement && typeof card.dataset.thread === 'string') cardScrollTops.set(card.dataset.thread, answer.scrollTop)
   }
   const workspace = state.workspace
   const threads = mapThreads()
-  const view = state.mode === 'thread' ? renderThread() : renderCanvas()
+  const view = renderCanvas()
   const hasCanvasContent = threads.length > 0 || state.draft?.kind === 'new'
   const newSessionBtn = `<button class="canvas-new-session" data-action="create-session" ${state.draft !== null ? 'disabled' : ''} title="在当前地图中开启新会话"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新建对话</span></button>`
   const canvasTools = hasCanvasContent ? `${newSessionBtn}<button data-action="layout" title="整理节点：自动修复分支连接并重排卡片">整理节点</button><button data-action="focus-active" title="定位到当前会话">定位</button><button data-action="zoom-out" aria-label="缩小">-</button><span>${Math.round(state.zoom * 100)}%</span><button data-action="zoom-in" aria-label="放大">+</button><button data-action="sync-forks" title="同步：拉取服务端地图并自动加入新分支">同步</button><button data-action="open-export-modal" title="导出地图资产包或高清图片">导出</button><button data-action="trigger-import" title="导入 .synapse 地图资产包">导入</button><button data-action="clear-map" title="卸载所有已载入会话">清空地图</button>` : `${newSessionBtn}<button data-action="trigger-import" title="导入 .synapse 地图资产包">导入地图</button>`
-  const canvasControls = state.mode === 'canvas' ? `<div class="canvas-controls"><button class="load-session-button" data-action="open-session-picker">加载对话</button>${canvasTools}</div>` : ''
-  const detailAvailable = currentThread() !== null
-  const canvasTabs = `<nav class="canvas-tabs" aria-label="会话地图视图"><button class="${state.mode === 'canvas' ? 'active' : ''}" data-action="show-canvas">地图</button><button class="${state.mode === 'thread' ? 'active' : ''}" data-action="show-thread" data-thread="${state.activeId ?? ''}" ${detailAvailable ? '' : 'disabled'}>详情</button></nav>`
+  const canvasControls = `<div class="canvas-controls"><button class="load-session-button" data-action="open-session-picker">加载对话</button>${canvasTools}</div>`
   const canDeleteMap = state.maps.length > 1
   const mapPicker = `<div class="map-picker" role="group" aria-label="地图书架"><span class="map-picker-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4.75A2.75 2.75 0 0 1 7.75 2H19v17.5H7.75A2.75 2.75 0 0 0 5 22V4.75Z"/><path d="M5 18.5A2.75 2.75 0 0 1 7.75 15.75H19"/></svg></span><label class="map-picker-field"><span>地图书架</span><select data-action="select-map" aria-label="选择地图">${state.maps.map(map => `<option value="${escapeHtml(map.id)}" ${map.id === state.activeMapId ? 'selected' : ''}>${escapeHtml(map.title)}</option>`).join('')}</select></label><button class="map-action-btn" data-action="rename-map" title="重命名当前地图" aria-label="重命名当前地图"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M12.854.146a.5.5 0 0 0-.707 0L10.5 1.793 14.207 5.5l1.647-1.646a.5.5 0 0 0 0-.708l-3-3zm.646 6.061L9.793 2.5 3.293 9H3.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.207l6.5-6.5zm-7.468 7.468A.5.5 0 0 1 6 13.5V13h-.5a.5.5 0 0 1-.5-.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.5-.5V10h-.5a.499.499 0 0 1-.175-.032l-.179.178a.5.5 0 0 0-.11.168l-2 5a.5.5 0 0 0 .65.65l5-2a.5.5 0 0 0 .168-.11l.178-.178z"/></svg></button>${canDeleteMap ? `<button class="map-action-btn danger" data-action="delete-map" title="删除当前地图" aria-label="删除当前地图"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/><path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/></svg></button>` : ''}<button class="map-create" data-action="create-map" title="新建地图" aria-label="新建地图"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>`
-  app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><div class="sidebar-heading"><span>历史对话</span><span class="sidebar-hint">拖到右侧地图加载</span></div>${renderSessionLibrary()}</aside><header class="topbar"><div class="view-switch" role="group" aria-label="视图切换"><button data-action="close" type="button" aria-pressed="false">对话</button><button class="active" type="button" aria-pressed="true">会话地图</button></div>${mapPicker}${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message" role="alert"><span>${escapeHtml(state.error)}</span><button data-action="dismiss-error" aria-label="关闭" title="关闭">×</button></div>` : ''}${canvasTabs}${view}</section>${state.sessionPickerOpen ? renderSessionPicker() : ''}${renderNoteModal()}${renderContextMenu()}${renderExportModal()}<input type="file" class="synapse-file-input" accept=".synapse,.json" data-action="import-file-selected" style="display:none"></main>`
+  app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><div class="sidebar-heading"><span>历史对话</span><span class="sidebar-hint">拖到右侧地图加载</span></div>${renderSessionLibrary()}</aside><header class="topbar"><div class="view-switch" role="group" aria-label="视图切换"><button data-action="close" type="button" aria-pressed="false">对话</button><button class="active" type="button" aria-pressed="true">会话地图</button></div>${mapPicker}${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message" role="alert"><span>${escapeHtml(state.error)}</span><button data-action="dismiss-error" aria-label="关闭" title="关闭">×</button></div>` : ''}${view}</section>${state.sessionPickerOpen ? renderSessionPicker() : ''}${renderNoteModal()}${renderContextMenu()}${renderExportModal()}<input type="file" class="synapse-file-input" accept=".synapse,.json" data-action="import-file-selected" style="display:none"></main>`
   installDragging()
   for (const [threadId, scrollTop] of cardScrollTops) {
     const answer = app.querySelector(`.thread-card[data-thread="${CSS.escape(threadId)}"] .thread-answer`)
     if (answer instanceof HTMLElement) answer.scrollTop = scrollTop
   }
-  if (detailScrollTop !== null) window.requestAnimationFrame(() => {
-    const nextDetail = document.querySelector('.detail-scroll')
-    if (nextDetail instanceof HTMLElement) nextDetail.scrollTop = detailScrollTop
-  })
   if (state.editingNoteCardId) {
     window.requestAnimationFrame(() => {
       const textarea = app.querySelector('.note-modal textarea')
@@ -2329,8 +2302,7 @@ app.addEventListener('click', async event => {
       // without closing the map; the client confirms via synapse:current-session.
       if (thread.dshSessionId !== null) post('synapse:activate-session', { sessionId: thread.dshSessionId })
     }
-    if (button.dataset.action === 'show-thread' && thread !== undefined) { state.activeId = thread.id; state.mode = 'thread'; render(); void loadThreadHistory(thread) }
-    if (button.dataset.action === 'show-canvas') { state.mode = 'canvas'; render() }
+
     if (button.dataset.action === 'open-continue' && thread !== undefined) openContinue(thread, button.dataset.card)
     if (button.dataset.action === 'open-branch' && thread !== undefined) {
       const requestedSeq = Number(button.dataset.seq)

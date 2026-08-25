@@ -56,7 +56,7 @@ test('activating a session from the map syncs DSH without closing the map', asyn
 
 test('selecting a session in the sidebar syncs the DSH current session', async () => {
   const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
-  const selectThread = source.slice(source.indexOf("button.dataset.action === 'select-thread'"), source.indexOf("button.dataset.action === 'show-thread'"))
+  const selectThread = source.slice(source.indexOf("button.dataset.action === 'select-thread'"), source.indexOf("if (button.dataset.action === 'open-continue'"))
 
   assert.match(selectThread, /synapse:activate-session/)
 })
@@ -77,24 +77,13 @@ test('renders markdown tables and allows higher canvas zoom', async () => {
   assert.match(source, /Math\.min\(4,/)
 })
 
-test('renders the refactored detail view with role-based messages', async () => {
+test('pure canvas map directly presents markdown and connects branches without redundant details view', async () => {
   const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
-  const thread = source.slice(source.indexOf('function renderThread'), source.indexOf('function render()'))
-  const message = source.slice(source.indexOf('function threadMessage'), source.indexOf('function processRecords'))
 
-  assert.match(thread, /detail-scroll/)
-  assert.match(thread, /detail-head/)
-  assert.match(message, /message-avatar/)
-  assert.match(message, /message-body/)
-})
-
-test('detail view renders an inline branch/follow-up draft', async () => {
-  const source = await readFile(new URL('../app.js', import.meta.url), 'utf8')
-  const thread = source.slice(source.indexOf('function renderThread'), source.indexOf('function render()'))
-
-  assert.match(thread, /detail-draft/)
-  assert.match(thread, /draft\.parentId === thread\.id/)
-  assert.match(thread, /draftActions\(draft\)/)
+  assert.match(source, /renderMarkdown\(card\.answer\.text\)/)
+  assert.match(source, /data-action="open-branch"/)
+  assert.match(source, /data-action="open-dsh"/)
+  assert.doesNotMatch(source, /class="canvas-tabs"/)
 })
 
 test('persists dragged card positions and can focus the current session', async () => {
