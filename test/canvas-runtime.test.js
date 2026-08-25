@@ -460,6 +460,67 @@ test('builds maximum spanning tree for multi-level deep branches and sibling for
   assert.equal(sessions.get('siblingBranchC').sourceSeedLength, 321)
 })
 
+test('restores deep multi-level tree with trimmed tail messages on branches without breaking parent links', async () => {
+  const app = await readFile(new URL('../app.js', import.meta.url), 'utf8')
+  const vm = await import('node:vm')
+
+  const context = {
+    globalThis: {},
+    fetch: async () => ({ ok: false }),
+    state: {
+      dshWorkspaces: [],
+      loadedSessions: new Map([
+        ['Root', {
+          cachedAt: 100,
+          messages: [
+            { kind: 'user', text: '讨论物理学模型', sourceSeq: 1 },
+            { kind: 'user', text: '推导光锥动量', sourceSeq: 3 }
+          ],
+          parentId: null
+        }],
+        ['Branch1', {
+          cachedAt: 200,
+          messages: [
+            { kind: 'user', text: '那这样的话P^+在这里起什么作用呢', sourceSeq: 10 }
+          ],
+          parentId: 'loaded:Root',
+          sourceSeedLength: 10
+        }],
+        ['DeepBranch2', {
+          cachedAt: 300,
+          messages: [
+            { kind: 'user', text: '对母粒子的波函数再做一次变换', sourceSeq: 20 }
+          ],
+          parentId: 'loaded:Branch1',
+          sourceSeedLength: 20
+        }]
+      ]),
+      cardPositions: new Map(),
+      branchAnchors: new Map([
+        ['loaded:Branch1', 'loaded:Root:turn:3'],
+        ['loaded:DeepBranch2', 'loaded:Branch1:turn:10']
+      ]),
+    },
+    persistLoadedSessions: () => {},
+  }
+  vm.createContext(context)
+
+  const fnStart = app.indexOf('function normalizeTurnText')
+  const fnEnd = app.indexOf('function persistCardPositions()')
+  const fnCode = app.slice(fnStart, fnEnd)
+
+  vm.runInContext(`${fnCode}; globalThis.repair = repairLoadedSessionConnections`, context)
+  await context.globalThis.repair()
+
+  const sessions = context.state.loadedSessions
+  assert.equal(sessions.get('Root').parentId, null)
+  assert.equal(sessions.get('Branch1').parentId, 'loaded:Root')
+  assert.equal(context.state.branchAnchors.get('loaded:Branch1'), 'loaded:Root:turn:3')
+  assert.equal(sessions.get('DeepBranch2').parentId, 'loaded:Branch1')
+  assert.equal(context.state.branchAnchors.get('loaded:DeepBranch2'), 'loaded:Branch1:turn:10')
+})
+
+
 test('renders canvas minimap navigator with interactive viewport bounding', async () => {
   const app = await readFile(new URL('../app.js', import.meta.url), 'utf8')
   const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8')

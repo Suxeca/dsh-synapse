@@ -389,17 +389,12 @@ async function repairLoadedSessionConnections() {
     }
   } catch { /* ignore */ }
 
-  const loadedIds = new Set(state.loadedSessions.keys())
-  let changed = false
-  const result = new Map()
-
-  // Maximum Spanning Tree Construction:
-  // 1. Gather all sessions and extract their dialogue turns
   const sessionList = []
   for (const [sessionId, entry] of state.loadedSessions.entries()) {
     const ownMsgs = entry?.messages ?? []
     const ownTurns = sessionUserTurns(ownMsgs)
-    const metaParentId = metaParentMap.get(sessionId) ?? (entry?.parentId ? String(entry.parentId).replace(/^loaded:/, '') : null)
+    const rawParent = entry?.parentId ? String(entry.parentId).replace(/^loaded:/, '') : null
+    const metaParent = metaParentMap.get(sessionId) ?? rawParent
     sessionList.push({
       id: sessionId,
       entry,
@@ -408,121 +403,120 @@ async function repairLoadedSessionConnections() {
       turnCount: ownTurns.length,
       firstTurn: ownTurns[0]?.text ? normalizeTurnText(ownTurns[0].text) : '',
       cachedAt: entry?.cachedAt ?? 0,
-      metaParentId,
-      metaSeedLength: Number.isSafeInteger(entry?.sourceSeedLength) ? entry.sourceSeedLength : null,
+      metaParentId: metaParent,
+      existingParentId: rawParent,
+      sourceSeedLength: Number.isSafeInteger(entry?.sourceSeedLength) ? entry.sourceSeedLength : null,
     })
   }
 
-  // 2. Group into topic clusters by initial question
-  const topicGroups = new Map()
-  for (const s of sessionList) {
-    if (s.turnCount === 0) continue
-    const group = topicGroups.get(s.firstTurn) ?? []
-    group.push(s)
-    topicGroups.set(s.firstTurn, group)
-  }
+  const byId = new Map(sessionList.map(s => [s.id, s]))
+  const result = new Map()
 
-  for (const [firstTurn, group] of topicGroups.entries()) {
-    if (group.length === 1) {
-      result.set(group[0].id, {
-        parentId: null,
-        parentSessionId: null,
-        sourceSeedLength: null,
-        anchorCardId: null,
-      })
-      continue
-    }
+  // 1. Sort sessions to identify natural roots (earliest created / least dependencies)
+  sessionList.sort((a, b) => {
+    const aIsMetaRoot = !a.metaParentId || !byId.has(a.metaParentId)
+    const bIsMetaRoot = !b.metaParentId || !byId.has(b.metaParentId)
+    if (aIsMetaRoot && !bIsMetaRoot) return -1
+    if (!aIsMetaRoot && bIsMetaRoot) return 1
+    if ((a.cachedAt || 0) !== (b.cachedAt || 0)) return (a.cachedAt || 0) - (b.cachedAt || 0)
+    return a.turnCount - b.turnCount
+  })
 
-    // 3. Establish the primary trunk / root for this tree
-    group.sort((a, b) => {
-      const aIsMetaRoot = !a.metaParentId || !group.some(g => g.id === a.metaParentId)
-      const bIsMetaRoot = !b.metaParentId || !group.some(g => g.id === b.metaParentId)
-      if (aIsMetaRoot && !bIsMetaRoot) return -1
-      if (!aIsMetaRoot && bIsMetaRoot) return 1
-      if ((a.cachedAt || 0) !== (b.cachedAt || 0)) return (a.cachedAt || 0) - (b.cachedAt || 0)
-      return a.turnCount - b.turnCount
-    })
+  const treeNodes = [sessionList[0]]
+  result.set(sessionList[0].id, {
+    parentId: null,
+    parentSessionId: null,
+    sourceSeedLength: null,
+    anchorCardId: null,
+    matchCount: 0,
+  })
 
-    const treeNodes = [group[0]]
-    result.set(group[0].id, {
-      parentId: null,
-      parentSessionId: null,
-      sourceSeedLength: null,
-      anchorCardId: null,
-    })
+  const remaining = sessionList.slice(1)
 
-    // 4. Greedily attach remaining branches to their deepest matching parent in the tree
-    const remaining = group.slice(1)
+  while (remaining.length > 0) {
+    let bestCandidateIdx = -1
+    let bestParentNode = null
+    let bestMatchK = 0
+    let bestForkParentTurn = null
+    let bestFirstOwnTurn = null
+    let fallbackCandidateIdx = -1
+    let fallbackParentNode = null
 
-    while (remaining.length > 0) {
-      let bestCandidateIdx = -1
-      let bestParentNode = null
-      let bestMatchK = 0
-      let bestFirstOwnTurn = null
-      let bestForkParentTurn = null
-
-      for (let i = 0; i < remaining.length; i++) {
-        const candidate = remaining[i]
-        for (const parentNode of treeNodes) {
-          let k = 0
-          while (k < candidate.turns.length && k < parentNode.turns.length) {
-            if (normalizeTurnText(candidate.turns[k].text) === normalizeTurnText(parentNode.turns[k].text)) {
-              k++
-            } else {
-              break
-            }
+    for (let i = 0; i < remaining.length; i++) {
+      const candidate = remaining[i]
+      for (const parentNode of treeNodes) {
+        let k = 0
+        while (k < candidate.turns.length && k < parentNode.turns.length) {
+          if (normalizeTurnText(candidate.turns[k].text) === normalizeTurnText(parentNode.turns[k].text)) {
+            k++
+          } else {
+            break
           }
-
-          if (k > bestMatchK) {
-            bestMatchK = k
+        }
+        if (k > bestMatchK) {
+          bestMatchK = k
+          bestCandidateIdx = i
+          bestParentNode = parentNode
+          bestForkParentTurn = parentNode.turns[k - 1]
+          bestFirstOwnTurn = candidate.turns[k]
+        } else if (k === bestMatchK && k > 0 && bestCandidateIdx !== -1) {
+          if (candidate.metaParentId === parentNode.id || candidate.existingParentId === parentNode.id) {
             bestCandidateIdx = i
             bestParentNode = parentNode
             bestForkParentTurn = parentNode.turns[k - 1]
             bestFirstOwnTurn = candidate.turns[k]
-          } else if (k === bestMatchK && k > 0 && bestCandidateIdx !== -1) {
-            if (candidate.metaParentId === parentNode.id) {
-              bestCandidateIdx = i
-              bestParentNode = parentNode
-              bestForkParentTurn = parentNode.turns[k - 1]
-              bestFirstOwnTurn = candidate.turns[k]
-            }
+          }
+        } else if (k === 0 && fallbackCandidateIdx === -1) {
+          // Check metadata or anchor connection for trimmed branches
+          const existingAnchor = state.branchAnchors.get(`loaded:${candidate.id}`) ?? state.branchAnchors.get(candidate.id)
+          const targetParentId = candidate.existingParentId ?? candidate.metaParentId
+          if (targetParentId === parentNode.id && (existingAnchor || Number.isSafeInteger(candidate.sourceSeedLength))) {
+            fallbackCandidateIdx = i
+            fallbackParentNode = parentNode
           }
         }
       }
-
-      if (bestCandidateIdx >= 0 && bestMatchK > 0) {
-        const selected = remaining.splice(bestCandidateIdx, 1)[0]
-        treeNodes.push(selected)
-
-        result.set(selected.id, {
-          parentId: `loaded:${bestParentNode.id}`,
-          parentSessionId: bestParentNode.id,
-          sourceSeedLength: (bestFirstOwnTurn && Number.isInteger(bestFirstOwnTurn.sourceSeq)) ? bestFirstOwnTurn.sourceSeq : selected.metaSeedLength,
-          anchorCardId: cardIdForTurn(`loaded:${bestParentNode.id}`, bestForkParentTurn),
-          matchCount: bestMatchK,
-        })
-      } else {
-        const isolated = remaining.shift()
-        treeNodes.push(isolated)
-        result.set(isolated.id, {
-          parentId: null,
-          parentSessionId: null,
-          sourceSeedLength: null,
-          anchorCardId: null,
-          matchCount: 0,
-        })
-      }
     }
-  }
 
-  // Handle empty sessions
-  for (const s of sessionList) {
-    if (s.turnCount === 0) {
-      result.set(s.id, {
+    if (bestCandidateIdx >= 0 && bestMatchK > 0) {
+      const selected = remaining.splice(bestCandidateIdx, 1)[0]
+      treeNodes.push(selected)
+      result.set(selected.id, {
+        parentId: `loaded:${bestParentNode.id}`,
+        parentSessionId: bestParentNode.id,
+        sourceSeedLength: (bestFirstOwnTurn && Number.isInteger(bestFirstOwnTurn.sourceSeq)) ? bestFirstOwnTurn.sourceSeq : selected.sourceSeedLength,
+        anchorCardId: cardIdForTurn(`loaded:${bestParentNode.id}`, bestForkParentTurn),
+        matchCount: bestMatchK,
+      })
+    } else if (fallbackCandidateIdx >= 0 && fallbackParentNode) {
+      const selected = remaining.splice(fallbackCandidateIdx, 1)[0]
+      treeNodes.push(selected)
+      const existingAnchor = state.branchAnchors.get(`loaded:${selected.id}`) ?? state.branchAnchors.get(selected.id)
+      let anchorCardId = existingAnchor ?? null
+      if (!anchorCardId && fallbackParentNode.turns.length > 0) {
+        if (Number.isSafeInteger(selected.sourceSeedLength)) {
+          const matchingTurn = fallbackParentNode.turns.filter(t => Number.isInteger(t.sourceSeq) ? t.sourceSeq < selected.sourceSeedLength : true).at(-1)
+          anchorCardId = cardIdForTurn(`loaded:${fallbackParentNode.id}`, matchingTurn ?? fallbackParentNode.turns.at(-1))
+        } else {
+          anchorCardId = cardIdForTurn(`loaded:${fallbackParentNode.id}`, fallbackParentNode.turns.at(-1))
+        }
+      }
+      result.set(selected.id, {
+        parentId: `loaded:${fallbackParentNode.id}`,
+        parentSessionId: fallbackParentNode.id,
+        sourceSeedLength: selected.sourceSeedLength,
+        anchorCardId,
+        matchCount: 0,
+      })
+    } else {
+      const isolated = remaining.shift()
+      treeNodes.push(isolated)
+      result.set(isolated.id, {
         parentId: null,
         parentSessionId: null,
         sourceSeedLength: null,
         anchorCardId: null,
+        matchCount: 0,
       })
     }
   }
@@ -544,6 +538,7 @@ async function repairLoadedSessionConnections() {
     }
   }
 
+  let changed = false
   // Apply repaired state and branch anchors
   for (const [sessionId, entry] of state.loadedSessions.entries()) {
     const target = result.get(sessionId)
@@ -573,7 +568,10 @@ async function repairLoadedSessionConnections() {
     }
   }
 
-  try { localStorage.setItem('dsh-synapse:branch-anchors', JSON.stringify([...state.branchAnchors])) } catch { /* ignore */ }
+  try {
+    localStorage.setItem('dsh-synapse:branch-anchors', JSON.stringify([...state.branchAnchors]))
+    if (typeof mapStorageKey === 'function') localStorage.setItem(mapStorageKey('dsh-synapse:branch-anchors'), JSON.stringify([...state.branchAnchors]))
+  } catch { /* ignore */ }
 
   if (changed) {
     persistLoadedSessions()
